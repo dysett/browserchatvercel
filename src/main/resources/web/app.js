@@ -1,4 +1,4 @@
-﻿(() => {
+(() => {
     const SESSION_TOKEN_KEY = "onlineChatToken";
     localStorage.removeItem(SESSION_TOKEN_KEY);
     const API_BASE_URL = String(window.CHAT_API_URL || "").replace(/\/+$/, "");
@@ -152,9 +152,12 @@
         state.eventController = controller;
         try {
             const response = await fetch(apiUrl("/api/events"), {
-                headers: { Authorization: `Bearer ${state.token}` },
-                signal: controller.signal
-            });
+    headers: {
+        Authorization: `Bearer ${state.token}`,
+        "ngrok-skip-browser-warning": "true"
+    },
+    signal: controller.signal
+});
             if (!response.ok || !response.body) {
                 throw new Error("Event stream is unavailable");
             }
