@@ -1,0 +1,11 @@
+{
+  "name": "browserchatvercel",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "build": "node scripts/build-vercel.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

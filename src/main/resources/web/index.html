@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Online Chat</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<main id="authScreen" class="auth-screen">
+    <section class="auth-panel" aria-labelledby="authTitle">
+        <div class="brand-mark">OC</div>
+        <p class="eyebrow">REAL-TIME MESSENGER</p>
+        <h1 id="authTitle">Online Chat</h1>
+        <p id="authDescription" class="muted">Sign in to continue your conversations.</p>
+        <form id="authForm" class="auth-form">
+            <label>Username
+                <input id="usernameInput" autocomplete="username" minlength="3" maxlength="32" required>
+            </label>
+            <label>Password
+                <input id="passwordInput" type="password" autocomplete="current-password" minlength="4" required>
+            </label>
+            <button id="authSubmit" class="primary-button" type="submit">Sign in</button>
+        </form>
+        <button id="authModeButton" class="text-button" type="button">Create an account</button>
+        <p id="authError" class="form-error" role="alert"></p>
+    </section>
+</main>
+
+<main id="appScreen" class="app-shell hidden">
+    <header class="topbar">
+        <div class="brand"><span class="brand-mark small">OC</span><span>Online Chat</span></div>
+        <div class="topbar-actions">
+            <span id="accountLabel" class="account-label"></span>
+            <button id="friendsButton" class="logout-button" type="button">Friends</button>
+            <button id="newGroupButton" class="icon-button" type="button" title="Create or join a group" aria-label="Create or join a group">+</button>
+            <button id="adminButton" class="icon-button hidden" type="button" title="Open administrator panel" aria-label="Open administrator panel">A</button>
+            <button id="themeButton" class="icon-button" type="button" title="Change color theme" aria-label="Change color theme">&#9681;</button>
+            <button id="logoutButton" class="logout-button" type="button">Logout</button>
+        </div>
+    </header>
+
+    <section class="chat-layout">
+        <aside class="sidebar" aria-label="Chats">
+            <div class="sidebar-heading">
+                <h2>Chats</h2>
+                <span id="chatCount" class="count-badge">0</span>
+            </div>
+            <label class="search-field">
+                <span class="visually-hidden">Search chats</span>
+                <input id="chatSearch" placeholder="Search chats">
+            </label>
+            <div id="chatList" class="chat-list" role="listbox" aria-label="Chat list"></div>
+        </aside>
+
+        <section class="conversation">
+            <header id="conversationHeader" class="conversation-header">
+                <div>
+                    <h2 id="conversationTitle">Choose a chat</h2>
+                    <p id="conversationStatus">Select a user or group on the left.</p>
+                </div>
+                <button id="groupActionsButton" class="icon-button group-actions-button hidden" type="button" title="Group settings" aria-label="Group settings">...</button>
+            </header>
+            <label class="message-search">
+                <span class="visually-hidden">Search messages</span>
+                <input id="messageSearch" placeholder="Search in this chat" disabled>
+            </label>
+            <div id="messageList" class="message-list" aria-live="polite"></div>
+            <form id="composerForm" class="composer">
+                <p id="typingIndicator" class="typing-indicator"></p>
+                <textarea id="messageInput" rows="1" maxlength="4000" placeholder="Write a message" disabled></textarea>
+                <button id="sendButton" class="primary-button" type="submit" disabled>Send</button>
+            </form>
+        </section>
+    </section>
+</main>
+
+<dialog id="groupDialog" class="dialog">
+    <form id="groupForm" method="dialog">
+        <div class="dialog-heading">
+            <h2>Group</h2>
+            <button class="close-button" type="button" data-close="groupDialog" aria-label="Close">x</button>
+        </div>
+        <p class="muted">Enter a group name, then choose an action.</p>
+        <label>Group name
+            <input id="groupNameInput" maxlength="60" required>
+        </label>
+        <div class="dialog-actions">
+            <button id="createGroupButton" class="primary-button" type="button">Create</button>
+            <button id="joinGroupButton" class="secondary-button" type="button">Join</button>
+        </div>
+        <p id="groupError" class="form-error" role="alert"></p>
+    </form>
+</dialog>
+
+<dialog id="membersDialog" class="dialog">
+    <form method="dialog">
+        <div class="dialog-heading">
+            <h2 id="membersDialogTitle">Group settings</h2>
+            <button class="close-button" type="button" data-close="membersDialog" aria-label="Close">x</button>
+        </div>
+        <p id="groupOwnerLabel" class="muted"></p>
+        <div id="groupMembersList" class="admin-user-list"></div>
+        <div id="memberManagement" class="member-management">
+            <label>Username
+                <input id="memberNameInput" maxlength="32">
+            </label>
+            <div class="dialog-actions">
+                <button id="addMemberButton" class="primary-button" type="button">Add member</button>
+                <button id="removeMemberButton" class="secondary-button danger-button" type="button">Remove member</button>
+            </div>
+        </div>
+        <div class="dialog-actions group-lifecycle-actions">
+            <button id="leaveGroupButton" class="secondary-button" type="button">Leave group</button>
+            <button id="deleteGroupButton" class="secondary-button danger-button hidden" type="button">Delete group</button>
+        </div>
+        <p id="membersError" class="form-error" role="alert"></p>
+    </form>
+</dialog>
+
+<dialog id="friendsDialog" class="dialog admin-dialog">
+    <form method="dialog">
+        <div class="dialog-heading">
+            <h2>Friends</h2>
+            <button class="close-button" type="button" data-close="friendsDialog" aria-label="Close">x</button>
+        </div>
+        <label>Find a user
+            <input id="friendSearch" placeholder="Username">
+        </label>
+        <div id="friendUserList" class="admin-user-list"></div>
+        <p id="friendsError" class="form-error" role="alert"></p>
+    </form>
+</dialog>
+
+<dialog id="adminDialog" class="dialog admin-dialog">
+    <form method="dialog">
+        <div class="dialog-heading">
+            <h2>Administrator panel</h2>
+            <button class="close-button" type="button" data-close="adminDialog" aria-label="Close">x</button>
+        </div>
+        <label>Search users
+            <input id="adminUserSearch" placeholder="Username">
+        </label>
+        <div id="adminUserList" class="admin-user-list"></div>
+        <p id="adminError" class="form-error" role="alert"></p>
+    </form>
+</dialog>
+
+<div id="toast" class="toast hidden" role="status"></div>
+<script src="/config.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

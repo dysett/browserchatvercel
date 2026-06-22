@@ -1,0 +1,10 @@
+target/
+dist/
+.vercel/
+.env
+chat.db
+*.db-journal
+.idea/
+*.iml
+.vscode/
+out/
