@@ -19,7 +19,7 @@ function retry() {
 
 async function connect() {
     try {
-        const tunnel = await localtunnel({ port, subdomain });
+        const tunnel = await localtunnel({ port, subdomain, local_host: "127.0.0.1" });
         console.log(`Tunnel is available at ${tunnel.url}`);
         tunnel.on("close", retry);
         tunnel.on("error", retry);
