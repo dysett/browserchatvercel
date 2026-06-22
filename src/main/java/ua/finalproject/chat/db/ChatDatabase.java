@@ -136,12 +136,69 @@ public final class ChatDatabase implements AutoCloseable {
         }
     }
 
+    public synchronized List<ChatUser> searchUsers(String query, int excludedUserId) {
+        if (query == null || query.isBlank()) {
+            return List.of();
+        }
+        String sql = """
+                select *
+                from users
+                where id <> ?
+                  and blocked = 0
+                  and lower(username) like lower(?)
+                order by username
+                limit 20
+                """;
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setInt(1, excludedUserId);
+            statement.setString(2, "%" + query.trim() + "%");
+            try (ResultSet resultSet = statement.executeQuery()) {
+                List<ChatUser> users = new ArrayList<>();
+                while (resultSet.next()) {
+                    users.add(readUser(resultSet));
+                }
+                return users;
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Cannot search users", e);
+        }
+    }
+
     public synchronized void blockUser(String username, ChatUser actor) {
         changeBlocked(username, actor, true);
     }
 
     public synchronized void unblockUser(String username, ChatUser actor) {
         changeBlocked(username, actor, false);
+    }
+
+    public synchronized void deleteUserPermanently(String username, ChatUser actor) {
+        requireAdmin(actor);
+        String login = requireName(username, "username");
+        if (actor.username().equals(login)) {
+            throw new IllegalArgumentException("Admin cannot delete himself");
+        }
+        ChatUser user = findUser(login)
+                .orElseThrow(() -> new IllegalArgumentException("User not found: " + login));
+
+        inTransaction(() -> {
+            for (long groupId : groupIdsOwnedBy(user.id())) {
+                deleteByChatId("delete from messages where chat_id = ?", groupId);
+                deleteByChatId("delete from chat_members where chat_id = ?", groupId);
+                deleteByChatId("delete from chats where id = ?", groupId);
+            }
+            deleteMessagesForUser(user.id());
+            deleteFriendshipsForUser(user.id());
+            deleteMembershipsForUser(user.id());
+            deleteEmptyPrivateChats();
+            try (PreparedStatement statement = connection.prepareStatement("delete from users where id = ?")) {
+                statement.setInt(1, user.id());
+                statement.executeUpdate();
+            } catch (SQLException e) {
+                throw new IllegalStateException("Cannot delete user", e);
+            }
+            return null;
+        });
     }
 
     public synchronized void createGroup(String groupName) {
@@ -380,6 +437,7 @@ public final class ChatDatabase implements AutoCloseable {
         inTransaction(() -> {
             removeFriendLink(userId, friend.id());
             removeFriendLink(friend.id(), userId);
+            deletePrivateChat(privateChatName(userId, friend.id()));
             return null;
         });
     }
@@ -753,6 +811,87 @@ public final class ChatDatabase implements AutoCloseable {
             statement.executeUpdate();
         } catch (SQLException e) {
             throw new IllegalStateException("Cannot delete group data", e);
+        }
+    }
+
+    private List<Long> groupIdsOwnedBy(int userId) {
+        String sql = """
+                select id
+                from chats
+                where type = 'GROUP'
+                  and owner_id = ?
+                  and name <> ?
+                """;
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setInt(1, userId);
+            statement.setString(2, GENERAL_CHAT);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                List<Long> ids = new ArrayList<>();
+                while (resultSet.next()) {
+                    ids.add(resultSet.getLong("id"));
+                }
+                return ids;
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Cannot find user groups", e);
+        }
+    }
+
+    private void deleteMessagesForUser(int userId) {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "delete from messages where sender_id = ? or recipient_id = ?")) {
+            statement.setInt(1, userId);
+            statement.setInt(2, userId);
+            statement.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException("Cannot delete user messages", e);
+        }
+    }
+
+    private void deleteFriendshipsForUser(int userId) {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "delete from friendships where user_id = ? or friend_id = ?")) {
+            statement.setInt(1, userId);
+            statement.setInt(2, userId);
+            statement.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException("Cannot delete user friendships", e);
+        }
+    }
+
+    private void deleteMembershipsForUser(int userId) {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "delete from chat_members where user_id = ?")) {
+            statement.setInt(1, userId);
+            statement.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException("Cannot delete user memberships", e);
+        }
+    }
+
+    private void deletePrivateChat(String chatName) {
+        String messageSql = "delete from messages where chat_id = (select id from chats where name = ? and type = 'PRIVATE')";
+        try (PreparedStatement messages = connection.prepareStatement(messageSql);
+             PreparedStatement chat = connection.prepareStatement("delete from chats where name = ? and type = 'PRIVATE'")) {
+            messages.setString(1, chatName);
+            messages.executeUpdate();
+            chat.setString(1, chatName);
+            chat.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException("Cannot delete private chat", e);
+        }
+    }
+
+    private void deleteEmptyPrivateChats() {
+        String sql = """
+                delete from chats
+                where type = 'PRIVATE'
+                  and not exists (select 1 from messages where messages.chat_id = chats.id)
+                """;
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException("Cannot clean private chats", e);
         }
     }
 

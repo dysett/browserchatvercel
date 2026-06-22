@@ -54,6 +54,7 @@ public final class ChatProcessor {
                 case ADMIN_DELETE_MESSAGE -> deleteMessage(request, requireUser(currentUser));
                 case ADMIN_BLOCK_USER -> blockUser(request, requireUser(currentUser));
                 case ADMIN_UNBLOCK_USER -> unblockUser(request, requireUser(currentUser));
+                case ADMIN_DELETE_USER -> deleteUser(request, requireUser(currentUser));
                 case MARK_READ -> markRead(request, requireUser(currentUser));
                 case LOGOUT -> ServerResult.response(ok(request, "Logged out"));
                 default -> ServerResult.response(error(request, "Unsupported client command"));
@@ -297,6 +298,11 @@ public final class ChatProcessor {
     private ServerResult unblockUser(ChatMessage request, ChatUser currentUser) {
         database.unblockUser(request.requiredField("username"), currentUser);
         return ServerResult.response(ok(request, "User unblocked"));
+    }
+
+    private ServerResult deleteUser(ChatMessage request, ChatUser currentUser) {
+        database.deleteUserPermanently(request.requiredField("username"), currentUser);
+        return ServerResult.response(ok(request, "User permanently deleted"));
     }
 
     private ServerResult markRead(ChatMessage request, ChatUser currentUser) {

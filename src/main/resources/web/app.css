@@ -206,6 +206,7 @@ input:focus, textarea:focus { border-color: var(--blue); box-shadow: 0 0 0 3px r
 .admin-user-list { max-height: min(48vh, 360px); overflow-y: auto; border: 1px solid var(--line); border-radius: 5px; }
 .admin-user-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 10px; border-bottom: 1px solid var(--line); }
 .admin-user-row:last-child { border-bottom: 0; }
+.admin-user-actions { display: flex; gap: 6px; align-items: center; }
 .admin-user-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; }
 .admin-user-meta { margin-top: 2px; color: var(--muted); font-size: 11px; }
 .admin-user-row button { padding: 5px 8px; border: 1px solid var(--line); border-radius: 4px; color: var(--blue-dark); background: var(--surface-soft); font-size: 12px; font-weight: 600; }

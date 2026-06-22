@@ -26,6 +26,7 @@ public enum ChatCommand {
     DELETE_GROUP(21),
     ADD_FRIEND(22),
     REMOVE_FRIEND(23),
+    ADMIN_DELETE_USER(24),
     RESPONSE(1000),
     EVENT_MESSAGE(1001),
     EVENT_USERS(1002),

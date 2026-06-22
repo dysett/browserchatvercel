@@ -224,6 +224,12 @@ class ChatHttpServerTest {
                     mapper.writeValueAsString(Map.of("username", "bob")));
             assertEquals(200, added.statusCode());
 
+            HttpResponse<String> removed = call(client, baseUrl, "DELETE", "/api/groups/team/members", aliceToken,
+                    mapper.writeValueAsString(Map.of("username", "bob")));
+            assertEquals(200, removed.statusCode());
+
+            assertEquals(200, call(client, baseUrl, "POST", "/api/groups/team/members", aliceToken,
+                    mapper.writeValueAsString(Map.of("username", "bob"))).statusCode());
             HttpResponse<String> left = call(client, baseUrl, "DELETE", "/api/groups/team/membership", bobToken, null);
             assertEquals(200, left.statusCode());
 
@@ -258,6 +264,60 @@ class ChatHttpServerTest {
             assertEquals("https://browserchatvercel.vercel.app",
                     response.headers().firstValue("Access-Control-Allow-Origin").orElseThrow());
             assertTrue(response.headers().firstValue("Access-Control-Allow-Headers").orElseThrow().contains("Authorization"));
+        }
+    }
+
+    @Test
+    void browserApiSearchesUsersWithoutExposingTheFullDirectoryToRegularUsers() throws Exception {
+        try (ChatDatabase database = new ChatDatabase("jdbc:sqlite::memory:");
+             ChatServer tcpServer = new ChatServer(0, database, "tcp-secret");
+             ChatHttpServer httpServer = new ChatHttpServer(0, database, tcpServer, new JwtTokenService("jwt-secret"))) {
+            tcpServer.start();
+            httpServer.start();
+            HttpClient client = HttpClient.newHttpClient();
+            String baseUrl = "http://localhost:" + httpServer.port();
+            String adminToken = register(client, baseUrl, "admin", "pass");
+            String aliceToken = register(client, baseUrl, "alice", "pass");
+            String bobToken = register(client, baseUrl, "bob", "pass");
+
+            JsonNode aliceChats = mapper.readTree(call(client, baseUrl, "GET", "/api/chats", aliceToken, null).body());
+            assertEquals(0, aliceChats.path("users").size());
+
+            JsonNode search = mapper.readTree(call(client, baseUrl, "GET", "/api/users/search?query=bo", aliceToken, null).body());
+            assertEquals(1, search.path("users").size());
+            assertEquals("bob", search.path("users").get(0).path("username").asText());
+
+            JsonNode adminChats = mapper.readTree(call(client, baseUrl, "GET", "/api/chats", adminToken, null).body());
+            assertEquals(3, adminChats.path("users").size());
+
+            HttpResponse<String> deleted = call(client, baseUrl, "DELETE", "/api/admin/users/bob", adminToken, null);
+            assertEquals(200, deleted.statusCode());
+            assertEquals(401, call(client, baseUrl, "GET", "/api/chats", bobToken, null).statusCode());
+            assertEquals(0, mapper.readTree(call(client, baseUrl, "GET", "/api/users/search?query=bo", aliceToken, null).body())
+                    .path("users").size());
+        }
+    }
+
+    @Test
+    void deletingPrivateChatRemovesHistoryAndFriendship() throws Exception {
+        try (ChatDatabase database = new ChatDatabase("jdbc:sqlite::memory:");
+             ChatServer tcpServer = new ChatServer(0, database, "tcp-secret");
+             ChatHttpServer httpServer = new ChatHttpServer(0, database, tcpServer, new JwtTokenService("jwt-secret"))) {
+            tcpServer.start();
+            httpServer.start();
+            HttpClient client = HttpClient.newHttpClient();
+            String baseUrl = "http://localhost:" + httpServer.port();
+            String aliceToken = register(client, baseUrl, "alice", "pass");
+            String bobToken = register(client, baseUrl, "bob", "pass");
+            addFriend(client, baseUrl, aliceToken, "bob");
+
+            assertEquals(202, call(client, baseUrl, "POST", "/api/messages", aliceToken,
+                    mapper.writeValueAsString(Map.of("to", "bob", "text", "erase me"))).statusCode());
+            assertEquals(200, call(client, baseUrl, "DELETE", "/api/friends/bob", aliceToken, null).statusCode());
+
+            addFriend(client, baseUrl, aliceToken, "bob");
+            JsonNode history = mapper.readTree(call(client, baseUrl, "GET", "/api/messages?with=alice", bobToken, null).body());
+            assertEquals(0, history.path("messages").size());
         }
     }
 

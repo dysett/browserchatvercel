@@ -126,4 +126,48 @@ class ChatDatabaseTest {
             assertTrue(deleted.deleted());
         }
     }
+
+    @Test
+    void deletingFriendRemovesPrivateChatHistoryBeforeAnotherConversation() throws Exception {
+        try (ChatDatabase database = new ChatDatabase("jdbc:sqlite::memory:")) {
+            ChatUser alice = database.register("alice", "pass");
+            ChatUser bob = database.register("bob", "pass");
+            database.addFriend(alice.id(), "bob");
+            String chat = database.savePrivateMessage(alice.id(), "bob", "first chat").chatName();
+
+            database.removeFriend(alice.id(), "bob");
+            assertTrue(database.history(chat, 10).isEmpty());
+            assertTrue(database.friendsForUser(alice.id()).isEmpty());
+            assertTrue(database.friendsForUser(bob.id()).isEmpty());
+
+            database.addFriend(alice.id(), "bob");
+            database.savePrivateMessage(alice.id(), "bob", "new chat");
+            List<StoredMessage> history = database.history(chat, 10);
+            assertEquals(1, history.size());
+            assertEquals("new chat", history.get(0).body());
+        }
+    }
+
+    @Test
+    void adminPermanentlyDeletesUserWithMessagesFriendshipsAndOwnedGroups() throws Exception {
+        try (ChatDatabase database = new ChatDatabase("jdbc:sqlite::memory:")) {
+            ChatUser admin = database.register("admin", "admin");
+            ChatUser alice = database.register("alice", "pass");
+            ChatUser bob = database.register("bob", "pass");
+            database.addFriend(alice.id(), "bob");
+            String privateChat = database.savePrivateMessage(alice.id(), "bob", "private message").chatName();
+            database.createGroupForUser("alice-team", alice.id());
+            database.addGroupMember("alice-team", "bob", alice);
+            database.savePublicMessage(alice.id(), "alice-team", "group message");
+
+            database.deleteUserPermanently("alice", admin);
+
+            assertTrue(database.findUser("alice").isEmpty());
+            assertTrue(database.friendsForUser(bob.id()).isEmpty());
+            assertTrue(database.groupsForUser(bob.id()).isEmpty());
+            assertTrue(database.history(privateChat, 10).isEmpty());
+            assertThrows(IllegalArgumentException.class, () -> database.joinGroup(bob.id(), "alice-team"));
+            assertThrows(IllegalArgumentException.class, () -> database.deleteUserPermanently("admin", admin));
+        }
+    }
 }

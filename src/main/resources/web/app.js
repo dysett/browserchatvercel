@@ -8,6 +8,8 @@
         currentUser: null,
         users: [],
         friends: [],
+        friendSearchResults: [],
+        friendSearchVersion: 0,
         chats: [],
         selected: null,
         currentMessages: [],
@@ -39,6 +41,7 @@
     const conversationStatus = $("conversationStatus");
     const typingIndicator = $("typingIndicator");
     const groupActionsButton = $("groupActionsButton");
+    const privateChatActionsButton = $("privateChatActionsButton");
     const groupDialog = $("groupDialog");
     const membersDialog = $("membersDialog");
     const friendsDialog = $("friendsDialog");
@@ -128,6 +131,7 @@
         state.currentUser = null;
         state.users = [];
         state.friends = [];
+        state.friendSearchResults = [];
         state.chats = [];
         state.selected = null;
         state.currentMessages = [];
@@ -327,6 +331,7 @@
         messageSearch.disabled = !enabled;
         sendButton.disabled = !enabled;
         groupActionsButton.classList.toggle("hidden", !chat || chat.type !== "group");
+        privateChatActionsButton.classList.toggle("hidden", !chat || chat.type !== "private");
         if (!chat) {
             conversationTitle.textContent = "Choose a chat";
             conversationStatus.textContent = "Select a user or group on the left.";
@@ -567,6 +572,14 @@
             const text = document.createElement("div");
             text.append(name, meta);
             row.append(text);
+            if (owner && username !== state.currentUser.username) {
+                const remove = document.createElement("button");
+                remove.type = "button";
+                remove.textContent = "Remove";
+                remove.classList.add("danger");
+                remove.addEventListener("click", () => { void removeGroupMember(username); });
+                row.append(remove);
+            }
             list.append(row);
         });
     }
@@ -574,6 +587,10 @@
     async function memberAction(method) {
         const username = $("memberNameInput").value.trim();
         if (!username || !state.selected || state.selected.type !== "group") return;
+        if (method === "DELETE") {
+            await removeGroupMember(username);
+            return;
+        }
         $("membersError").textContent = "";
         try {
             const group = encodeURIComponent(state.selected.key);
@@ -582,6 +599,22 @@
             await loadGroupMembers();
             await refreshChats();
             showToast(method === "POST" ? "Member added" : "Member removed");
+        } catch (error) {
+            $("membersError").textContent = error.message;
+        }
+    }
+
+    async function removeGroupMember(username) {
+        if (!state.selected || state.selected.type !== "group") return;
+        if (!window.confirm(`Remove ${username} from ${state.selected.title}?`)) return;
+        $("membersError").textContent = "";
+        try {
+            const group = encodeURIComponent(state.selected.key);
+            await api(`/api/groups/${group}/members`, { method: "DELETE", body: JSON.stringify({ username }) });
+            $("memberNameInput").value = "";
+            await loadGroupMembers();
+            await refreshChats();
+            showToast("Member removed");
         } catch (error) {
             $("membersError").textContent = error.message;
         }
@@ -597,6 +630,19 @@
             showToast("You left the group");
         } catch (error) {
             $("membersError").textContent = error.message;
+        }
+    }
+
+    async function deletePrivateChat() {
+        if (!state.selected || state.selected.type !== "private") return;
+        const username = state.selected.key;
+        if (!window.confirm(`Delete the chat with ${username} and all its messages?`)) return;
+        try {
+            await api(`/api/friends/${encodeURIComponent(username)}`, { method: "DELETE" });
+            await refreshChats();
+            showToast("Chat deleted");
+        } catch (error) {
+            showToast(error.message);
         }
     }
 
@@ -616,6 +662,7 @@
     function openFriendsPanel() {
         $("friendsError").textContent = "";
         $("friendSearch").value = "";
+        state.friendSearchResults = [];
         renderFriendUsers();
         friendsDialog.showModal();
     }
@@ -624,9 +671,7 @@
         const list = $("friendUserList");
         const filter = $("friendSearch").value.trim().toLowerCase();
         const friendNames = new Set(state.friends);
-        const users = state.users.filter((user) => user.username !== state.currentUser.username
-            && !user.blocked
-            && user.username.toLowerCase().includes(filter));
+        const users = state.friendSearchResults;
         list.replaceChildren();
         users.forEach((user) => {
             const row = document.createElement("div");
@@ -651,8 +696,30 @@
         if (!users.length) {
             const empty = document.createElement("p");
             empty.className = "empty-state";
-            empty.textContent = "No users found.";
+            empty.textContent = filter ? "No users found." : "Enter a nickname to search.";
             list.append(empty);
+        }
+    }
+
+    async function searchFriendUsers() {
+        const term = $("friendSearch").value.trim();
+        const version = ++state.friendSearchVersion;
+        $("friendsError").textContent = "";
+        if (!term) {
+            state.friendSearchResults = [];
+            renderFriendUsers();
+            return;
+        }
+        try {
+            const result = await api(`/api/users/search?${new URLSearchParams({ query: term })}`);
+            if (version !== state.friendSearchVersion) return;
+            state.friendSearchResults = result.users || [];
+            renderFriendUsers();
+        } catch (error) {
+            if (version !== state.friendSearchVersion) return;
+            state.friendSearchResults = [];
+            renderFriendUsers();
+            $("friendsError").textContent = error.message;
         }
     }
 
@@ -661,7 +728,7 @@
         try {
             await api(`/api/friends/${encodeURIComponent(user.username)}`, { method });
             await refreshChats();
-            renderFriendUsers();
+            await searchFriendUsers();
             if (method === "POST") {
                 const chat = state.chats.find((item) => item.type === "private" && item.key === user.username);
                 if (chat) await selectChat(chat);
@@ -705,13 +772,22 @@
         meta.className = "admin-user-meta";
         meta.textContent = `${user.role} - ${user.blocked ? "blocked" : user.online ? "online" : "offline"}`;
         text.append(name, meta);
-        const action = document.createElement("button");
-        action.type = "button";
-        action.textContent = user.blocked ? "Unblock" : "Block";
-        action.classList.toggle("danger", !user.blocked);
-        action.disabled = user.username === state.currentUser.username;
-        action.addEventListener("click", () => adminUserAction(user, user.blocked ? "unblock" : "block"));
-        row.append(text, action);
+        const actions = document.createElement("div");
+        actions.className = "admin-user-actions";
+        const blockAction = document.createElement("button");
+        blockAction.type = "button";
+        blockAction.textContent = user.blocked ? "Unblock" : "Block";
+        blockAction.classList.toggle("danger", !user.blocked);
+        blockAction.disabled = user.username === state.currentUser.username;
+        blockAction.addEventListener("click", () => adminUserAction(user, user.blocked ? "unblock" : "block"));
+        const deleteAction = document.createElement("button");
+        deleteAction.type = "button";
+        deleteAction.textContent = "Delete";
+        deleteAction.classList.add("danger");
+        deleteAction.disabled = user.username === state.currentUser.username;
+        deleteAction.addEventListener("click", () => deleteUser(user));
+        actions.append(blockAction, deleteAction);
+        row.append(text, actions);
         return row;
     }
 
@@ -722,6 +798,19 @@
             await refreshChats();
             renderAdminUsers();
             showToast(action === "block" ? "User blocked" : "User unblocked");
+        } catch (error) {
+            $("adminError").textContent = error.message;
+        }
+    }
+
+    async function deleteUser(user) {
+        if (!window.confirm(`Permanently delete ${user.username} and all related data?`)) return;
+        $("adminError").textContent = "";
+        try {
+            await api(`/api/admin/users/${encodeURIComponent(user.username)}`, { method: "DELETE" });
+            await refreshChats();
+            renderAdminUsers();
+            showToast("User permanently deleted");
         } catch (error) {
             $("adminError").textContent = error.message;
         }
@@ -754,7 +843,8 @@
     $("removeMemberButton").addEventListener("click", () => memberAction("DELETE"));
     $("leaveGroupButton").addEventListener("click", () => { void leaveGroup(); });
     $("deleteGroupButton").addEventListener("click", () => { void deleteGroup(); });
-    $("friendSearch").addEventListener("input", renderFriendUsers);
+    privateChatActionsButton.addEventListener("click", () => { void deletePrivateChat(); });
+    $("friendSearch").addEventListener("input", () => { void searchFriendUsers(); });
     $("adminButton").addEventListener("click", openAdminPanel);
     $("adminUserSearch").addEventListener("input", renderAdminUsers);
     document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => $(button.dataset.close).close()));

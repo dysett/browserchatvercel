@@ -9,6 +9,7 @@ import com.sun.net.httpserver.HttpServer;
 import ua.finalproject.chat.db.ChatDatabase;
 import ua.finalproject.chat.db.ChatUser;
 import ua.finalproject.chat.db.StoredMessage;
+import ua.finalproject.chat.db.UserRole;
 import ua.finalproject.chat.protocol.ChatCommand;
 import ua.finalproject.chat.protocol.ChatMessage;
 import ua.finalproject.chat.server.ChatServer;
@@ -161,6 +162,14 @@ public final class ChatHttpServer implements AutoCloseable {
                 chats(exchange, user);
                 return;
             }
+            if ("/api/users/search".equals(path)) {
+                if ("GET".equals(method)) {
+                    userSearch(exchange, user);
+                } else {
+                    methodNotAllowed(exchange, "GET");
+                }
+                return;
+            }
             if ("/api/events".equals(path)) {
                 if (!"GET".equals(method)) {
                     methodNotAllowed(exchange, "GET");
@@ -236,10 +245,9 @@ public final class ChatHttpServer implements AutoCloseable {
     }
 
     private void chats(HttpExchange exchange, ChatUser user) throws IOException {
-        List<ChatUser> detailedUsers = database.listUsersDetailed();
-        List<UserDto> users = detailedUsers.stream()
-                .map(this::userDto)
-                .toList();
+        List<UserDto> users = user.role() == UserRole.ADMIN
+                ? database.listUsersDetailed().stream().map(this::userDto).toList()
+                : List.of();
         List<ChatUser> friends = database.friendsForUser(user.id());
         List<String> friendNames = friends.stream().map(ChatUser::username).toList();
         List<String> groups = database.groupsForUser(user.id());
@@ -254,6 +262,14 @@ public final class ChatHttpServer implements AutoCloseable {
             summaries.add(chatSummary("group", group, group, false, group, user.id(), database.isGroupOwner(group, user.id())));
         }
         sendJson(exchange, 200, new ChatsResponse(userDto(user), users, friendNames, groups, summaries));
+    }
+
+    private void userSearch(HttpExchange exchange, ChatUser user) throws IOException {
+        String term = query(exchange).getOrDefault("query", "");
+        List<UserDto> users = database.searchUsers(term, user.id()).stream()
+                .map(this::userDto)
+                .toList();
+        sendJson(exchange, 200, new UsersResponse(users));
     }
 
     private void history(HttpExchange exchange, ChatUser user) throws IOException {
@@ -387,21 +403,25 @@ public final class ChatHttpServer implements AutoCloseable {
     }
 
     private void adminUser(HttpExchange exchange, ChatUser user, String path, String method) throws IOException {
-        if (!"POST".equals(method)) {
-            methodNotAllowed(exchange, "POST");
-            return;
-        }
         String suffix = path.substring("/api/admin/users/".length());
         String[] parts = suffix.split("/", -1);
-        if (parts.length != 2 || parts[0].isBlank()) {
+        if (parts[0].isBlank()) {
             throw new ApiException(404, "Endpoint not found");
         }
         String username = URLDecoder.decode(parts[0], StandardCharsets.UTF_8);
-        ChatCommand command = switch (parts[1]) {
-            case "block" -> ChatCommand.ADMIN_BLOCK_USER;
-            case "unblock" -> ChatCommand.ADMIN_UNBLOCK_USER;
-            default -> throw new ApiException(404, "Endpoint not found");
-        };
+        ChatCommand command;
+        if ("DELETE".equals(method) && parts.length == 1) {
+            command = ChatCommand.ADMIN_DELETE_USER;
+        } else if ("POST".equals(method) && parts.length == 2) {
+            command = switch (parts[1]) {
+                case "block" -> ChatCommand.ADMIN_BLOCK_USER;
+                case "unblock" -> ChatCommand.ADMIN_UNBLOCK_USER;
+                default -> throw new ApiException(404, "Endpoint not found");
+            };
+        } else {
+            methodNotAllowed(exchange, "POST, DELETE");
+            return;
+        }
         ChatMessage message = ChatMessage.of(command, user.id(), ChatMessage.fields("username", username));
         sendJson(exchange, 200, new ActionResponse(process(user, message)));
     }
@@ -683,6 +703,9 @@ public final class ChatHttpServer implements AutoCloseable {
             List<String> groups,
             List<ChatSummaryDto> chats
     ) {
+    }
+
+    public record UsersResponse(List<UserDto> users) {
     }
 
     public record ChatSummaryDto(
