@@ -150,6 +150,41 @@ class ChatHttpServerTest {
     }
 
     @Test
+    void openingChatImmediatelyPushesReadStatusToMessageAuthor() throws Exception {
+        try (ChatDatabase database = new ChatDatabase("jdbc:sqlite::memory:");
+             ChatServer tcpServer = new ChatServer(0, database, "tcp-secret");
+             ChatHttpServer httpServer = new ChatHttpServer(0, database, tcpServer, new JwtTokenService("jwt-secret"))) {
+            tcpServer.start();
+            httpServer.start();
+            HttpClient client = HttpClient.newHttpClient();
+            String baseUrl = "http://localhost:" + httpServer.port();
+            String aliceToken = register(client, baseUrl, "alice", "pass");
+            String bobToken = register(client, baseUrl, "bob", "pass");
+            addFriend(client, baseUrl, aliceToken, "bob");
+            assertEquals(202, call(client, baseUrl, "POST", "/api/messages", aliceToken,
+                    mapper.writeValueAsString(Map.of("to", "bob", "text", "please read"))).statusCode());
+
+            HttpRequest eventRequest = HttpRequest.newBuilder(URI.create(baseUrl + "/api/events"))
+                    .header("Authorization", "Bearer " + aliceToken)
+                    .GET()
+                    .build();
+            HttpResponse<InputStream> stream = client.sendAsync(eventRequest, HttpResponse.BodyHandlers.ofInputStream())
+                    .get(3, TimeUnit.SECONDS);
+            assertEquals(200, stream.statusCode());
+
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(stream.body(), StandardCharsets.UTF_8))) {
+                assertEquals(200, call(client, baseUrl, "GET", "/api/messages?with=alice", bobToken, null).statusCode());
+                String event = awaitEvent(reader, "EVENT_MESSAGE_UPDATE");
+                assertTrue(event.contains("EVENT_MESSAGE_UPDATE"));
+                assertTrue(event.contains("read"));
+            }
+
+            JsonNode history = mapper.readTree(call(client, baseUrl, "GET", "/api/messages?with=bob", aliceToken, null).body());
+            assertEquals("READ", history.path("messages").get(0).path("status").asText());
+        }
+    }
+
+    @Test
     void concurrentHttpRequestsPreserveEveryMessage() throws Exception {
         try (ChatDatabase database = new ChatDatabase("jdbc:sqlite::memory:");
              ChatServer tcpServer = new ChatServer(0, database, "tcp-secret");
@@ -322,13 +357,17 @@ class ChatHttpServerTest {
     }
 
     private static String awaitMessageEvent(BufferedReader reader) throws Exception {
+        return awaitEvent(reader, "EVENT_MESSAGE");
+    }
+
+    private static String awaitEvent(BufferedReader reader, String command) throws Exception {
         for (int attempt = 0; attempt < 3; attempt++) {
             String payload = readSseEvent(reader);
-            if (payload.contains("EVENT_MESSAGE")) {
+            if (payload.contains(command)) {
                 return payload;
             }
         }
-        throw new IllegalStateException("No message event arrived");
+        throw new IllegalStateException("Expected event did not arrive: " + command);
     }
 
     private static String readSseEvent(BufferedReader reader) throws Exception {

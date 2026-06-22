@@ -280,13 +280,30 @@ public final class ChatDatabase implements AutoCloseable {
     }
 
     private void addMembership(long chatId, int userId) {
-        String sql = "insert or ignore into chat_members(chat_id, user_id) values (?, ?)";
+        String sql = """
+                insert or ignore into chat_members(chat_id, user_id, joined_at, joined_after_message_id)
+                values (?, ?, ?, ?)
+                """;
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setLong(1, chatId);
             statement.setInt(2, userId);
+            statement.setString(3, Instant.now().toString());
+            statement.setLong(4, lastMessageId(chatId));
             statement.executeUpdate();
         } catch (SQLException e) {
             throw new IllegalStateException("Cannot join group", e);
+        }
+    }
+
+    private long lastMessageId(long chatId) {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "select coalesce(max(id), 0) from messages where chat_id = ?")) {
+            statement.setLong(1, chatId);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next() ? resultSet.getLong(1) : 0;
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Cannot read group history boundary", e);
         }
     }
 
@@ -472,6 +489,39 @@ public final class ChatDatabase implements AutoCloseable {
         }
     }
 
+    public synchronized List<StoredMessage> historyForUser(String chatName, int userId, int limit) {
+        String chat = requireName(chatName, "chatName");
+        int safeLimit = Math.max(1, Math.min(limit, 100));
+        String sql = """
+                select m.id, c.name as chat_name, u.username as sender, r.username as recipient,
+                       m.body, m.created_at, m.deleted, m.status, m.edited
+                from messages m
+                join chats c on c.id = m.chat_id
+                join users u on u.id = m.sender_id
+                left join users r on r.id = m.recipient_id
+                left join chat_members cm on cm.chat_id = c.id and cm.user_id = ?
+                where c.name = ?
+                  and (c.type <> 'GROUP' or m.id > cm.joined_after_message_id)
+                order by m.id desc
+                limit ?
+                """;
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setInt(1, userId);
+            statement.setString(2, chat);
+            statement.setInt(3, safeLimit);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                List<StoredMessage> messages = new ArrayList<>();
+                while (resultSet.next()) {
+                    messages.add(readMessage(resultSet));
+                }
+                Collections.reverse(messages);
+                return messages;
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Cannot read user history", e);
+        }
+    }
+
     public synchronized List<StoredMessage> recentMessages(int limit) {
         int safeLimit = Math.max(1, Math.min(limit, 50));
         String sql = """
@@ -508,22 +558,48 @@ public final class ChatDatabase implements AutoCloseable {
         }
     }
 
-    public synchronized void markChatRead(String chatName, int readerId) {
-        String sql = """
-                update messages
-                set status = ?
-                where chat_id = (select id from chats where name = ?)
-                  and sender_id <> ?
-                  and deleted = 0
+    public synchronized List<StoredMessage> markChatRead(String chatName, int readerId) {
+        String chat = requireName(chatName, "chatName");
+        String select = """
+                select m.id
+                from messages m
+                join chats c on c.id = m.chat_id
+                left join chat_members cm on cm.chat_id = c.id and cm.user_id = ?
+                where c.name = ?
+                  and m.sender_id <> ?
+                  and m.deleted = 0
+                  and m.status <> ?
+                  and (c.type <> 'GROUP' or m.id > cm.joined_after_message_id)
                 """;
-        try (PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setString(1, MessageStatus.READ.name());
-            statement.setString(2, requireName(chatName, "chatName"));
+        List<Long> messageIds = new ArrayList<>();
+        try (PreparedStatement statement = connection.prepareStatement(select)) {
+            statement.setInt(1, readerId);
+            statement.setString(2, chat);
             statement.setInt(3, readerId);
-            statement.executeUpdate();
+            statement.setString(4, MessageStatus.READ.name());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    messageIds.add(resultSet.getLong("id"));
+                }
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Cannot find unread messages", e);
+        }
+        if (messageIds.isEmpty()) {
+            return List.of();
+        }
+        try (PreparedStatement statement = connection.prepareStatement(
+                "update messages set status = ? where id = ?")) {
+            for (long messageId : messageIds) {
+                statement.setString(1, MessageStatus.READ.name());
+                statement.setLong(2, messageId);
+                statement.addBatch();
+            }
+            statement.executeBatch();
         } catch (SQLException e) {
             throw new IllegalStateException("Cannot mark messages as read", e);
         }
+        return messageIds.stream().map(this::historyById).toList();
     }
 
     public synchronized int unreadMessages(String chatName, int readerId) {
@@ -531,15 +607,18 @@ public final class ChatDatabase implements AutoCloseable {
                 select count(*)
                 from messages m
                 join chats c on c.id = m.chat_id
+                left join chat_members cm on cm.chat_id = c.id and cm.user_id = ?
                 where c.name = ?
                   and m.sender_id <> ?
                   and m.deleted = 0
                   and m.status <> ?
+                  and (c.type <> 'GROUP' or m.id > cm.joined_after_message_id)
                 """;
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setString(1, requireName(chatName, "chatName"));
-            statement.setInt(2, readerId);
-            statement.setString(3, MessageStatus.READ.name());
+            statement.setInt(1, readerId);
+            statement.setString(2, requireName(chatName, "chatName"));
+            statement.setInt(3, readerId);
+            statement.setString(4, MessageStatus.READ.name());
             try (ResultSet resultSet = statement.executeQuery()) {
                 return resultSet.next() ? resultSet.getInt(1) : 0;
             }
@@ -631,6 +710,8 @@ public final class ChatDatabase implements AutoCloseable {
                     create table if not exists chat_members (
                         chat_id integer not null references chats(id),
                         user_id integer not null references users(id),
+                        joined_at text not null,
+                        joined_after_message_id integer not null default 0,
                         primary key (chat_id, user_id)
                     )
                     """);
@@ -658,6 +739,10 @@ public final class ChatDatabase implements AutoCloseable {
             ensureColumn(statement, "chats", "owner_id", "integer references users(id)");
             ensureColumn(statement, "messages", "status", "text not null default 'SENT'");
             ensureColumn(statement, "messages", "edited", "integer not null default 0");
+            ensureColumn(statement, "chat_members", "joined_at", "text");
+            ensureColumn(statement, "chat_members", "joined_after_message_id", "integer not null default 0");
+            statement.executeUpdate("update chat_members set joined_at = '1970-01-01T00:00:00Z' where joined_at is null");
+            statement.executeUpdate("update chat_members set joined_after_message_id = 0 where joined_after_message_id is null");
             statement.executeUpdate("""
                     update chats
                     set owner_id = (

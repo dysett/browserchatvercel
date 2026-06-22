@@ -45,6 +45,7 @@
     const groupDialog = $("groupDialog");
     const membersDialog = $("membersDialog");
     const friendsDialog = $("friendsDialog");
+    const privateChatActionsDialog = $("privateChatActionsDialog");
     const adminDialog = $("adminDialog");
     let registrationMode = false;
 
@@ -266,7 +267,7 @@
             chatList.append(heading);
             chats.forEach((chat) => chatList.append(chatRow(chat)));
         };
-        addSection("PEOPLE", "private");
+        addSection("People", "private");
         addSection("GROUPS", "group");
         if (!chatList.children.length) {
             const empty = document.createElement("p");
@@ -584,21 +585,17 @@
         });
     }
 
-    async function memberAction(method) {
+    async function addGroupMember() {
         const username = $("memberNameInput").value.trim();
         if (!username || !state.selected || state.selected.type !== "group") return;
-        if (method === "DELETE") {
-            await removeGroupMember(username);
-            return;
-        }
         $("membersError").textContent = "";
         try {
             const group = encodeURIComponent(state.selected.key);
-            await api(`/api/groups/${group}/members`, { method, body: JSON.stringify({ username }) });
+            await api(`/api/groups/${group}/members`, { method: "POST", body: JSON.stringify({ username }) });
             $("memberNameInput").value = "";
             await loadGroupMembers();
             await refreshChats();
-            showToast(method === "POST" ? "Member added" : "Member removed");
+            showToast("Member added");
         } catch (error) {
             $("membersError").textContent = error.message;
         }
@@ -639,11 +636,17 @@
         if (!window.confirm(`Delete the chat with ${username} and all its messages?`)) return;
         try {
             await api(`/api/friends/${encodeURIComponent(username)}`, { method: "DELETE" });
+            privateChatActionsDialog.close();
             await refreshChats();
             showToast("Chat deleted");
         } catch (error) {
             showToast(error.message);
         }
+    }
+
+    function openPrivateChatActions() {
+        if (!state.selected || state.selected.type !== "private") return;
+        privateChatActionsDialog.showModal();
     }
 
     async function deleteGroup() {
@@ -839,11 +842,11 @@
     $("createGroupButton").addEventListener("click", () => groupAction("create"));
     $("joinGroupButton").addEventListener("click", () => groupAction("join"));
     groupActionsButton.addEventListener("click", () => { void openGroupActions(); });
-    $("addMemberButton").addEventListener("click", () => memberAction("POST"));
-    $("removeMemberButton").addEventListener("click", () => memberAction("DELETE"));
+    $("addMemberButton").addEventListener("click", () => { void addGroupMember(); });
     $("leaveGroupButton").addEventListener("click", () => { void leaveGroup(); });
     $("deleteGroupButton").addEventListener("click", () => { void deleteGroup(); });
-    privateChatActionsButton.addEventListener("click", () => { void deletePrivateChat(); });
+    privateChatActionsButton.addEventListener("click", openPrivateChatActions);
+    $("deletePrivateChatButton").addEventListener("click", () => { void deletePrivateChat(); });
     $("friendSearch").addEventListener("input", () => { void searchFriendUsers(); });
     $("adminButton").addEventListener("click", openAdminPanel);
     $("adminUserSearch").addEventListener("input", renderAdminUsers);

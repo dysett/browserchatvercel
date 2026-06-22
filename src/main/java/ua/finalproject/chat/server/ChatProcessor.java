@@ -268,8 +268,8 @@ public final class ChatProcessor {
     private ServerResult history(ChatMessage request, ChatUser currentUser) {
         String chat = resolveChat(request, currentUser);
         int limit = request.field("limit") == null ? 20 : Integer.parseInt(request.field("limit"));
-        database.markChatRead(chat, currentUser.id());
-        List<StoredMessage> messages = database.history(chat, limit);
+        List<StoredMessage> readMessages = database.markChatRead(chat, currentUser.id());
+        List<StoredMessage> messages = database.historyForUser(chat, currentUser.id(), limit);
         String history = messages.stream()
                 .map(this::historyLine)
                 .collect(Collectors.joining("\n"));
@@ -282,7 +282,7 @@ public final class ChatProcessor {
                 "history", history,
                 "historyData", historyData,
                 "user", currentUser.username()
-        )));
+        ))).withEvents(readEvents(readMessages));
     }
 
     private ServerResult deleteMessage(ChatMessage request, ChatUser currentUser) {
@@ -307,8 +307,9 @@ public final class ChatProcessor {
 
     private ServerResult markRead(ChatMessage request, ChatUser currentUser) {
         String chat = resolveChat(request, currentUser);
-        database.markChatRead(chat, currentUser.id());
-        return ServerResult.response(ok(request, "Messages marked as read"));
+        List<StoredMessage> readMessages = database.markChatRead(chat, currentUser.id());
+        return ServerResult.response(ok(request, "Messages marked as read"))
+                .withEvents(readEvents(readMessages));
     }
 
     private String resolveChat(ChatMessage request, ChatUser currentUser) {
@@ -356,6 +357,12 @@ public final class ChatProcessor {
         }
         return database.groupMembers(message.chatName()).stream()
                 .map(member -> OutboundEvent.toUser(member, event))
+                .toList();
+    }
+
+    private List<OutboundEvent> readEvents(List<StoredMessage> messages) {
+        return messages.stream()
+                .flatMap(message -> eventsForMessageUpdate(message, "read").stream())
                 .toList();
     }
 

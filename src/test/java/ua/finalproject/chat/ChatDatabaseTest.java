@@ -36,7 +36,10 @@ class ChatDatabaseTest {
             assertEquals(MessageStatus.SENT, history.get(0).status());
             assertFalse(history.get(0).deleted());
 
-            database.markChatRead(message.chatName(), bob.id());
+            List<StoredMessage> readMessages = database.markChatRead(message.chatName(), bob.id());
+            assertEquals(1, readMessages.size());
+            assertEquals(MessageStatus.READ, readMessages.get(0).status());
+            assertTrue(database.markChatRead(message.chatName(), bob.id()).isEmpty());
             assertEquals(MessageStatus.READ, database.history(message.chatName(), 10).get(0).status());
         }
     }
@@ -168,6 +171,31 @@ class ChatDatabaseTest {
             assertTrue(database.history(privateChat, 10).isEmpty());
             assertThrows(IllegalArgumentException.class, () -> database.joinGroup(bob.id(), "alice-team"));
             assertThrows(IllegalArgumentException.class, () -> database.deleteUserPermanently("admin", admin));
+        }
+    }
+
+    @Test
+    void groupHistoryStartsFromTheLatestMembership() throws Exception {
+        try (ChatDatabase database = new ChatDatabase("jdbc:sqlite::memory:")) {
+            ChatUser alice = database.register("alice", "pass");
+            ChatUser bob = database.register("bob", "pass");
+            database.createGroupForUser("team", alice.id());
+            database.savePublicMessage(alice.id(), "team", "before joining");
+
+            database.addGroupMember("team", "bob", alice);
+            database.savePublicMessage(alice.id(), "team", "after first join");
+            assertEquals(List.of("after first join"), database.historyForUser("team", bob.id(), 10).stream()
+                    .map(StoredMessage::body)
+                    .toList());
+
+            database.removeGroupMember("team", "bob", alice);
+            database.savePublicMessage(alice.id(), "team", "while away");
+            database.addGroupMember("team", "bob", alice);
+            database.savePublicMessage(alice.id(), "team", "after returning");
+
+            assertEquals(List.of("after returning"), database.historyForUser("team", bob.id(), 10).stream()
+                    .map(StoredMessage::body)
+                    .toList());
         }
     }
 }

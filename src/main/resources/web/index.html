@@ -33,7 +33,7 @@
         <div class="brand"><span class="brand-mark small">OC</span><span>Online Chat</span></div>
         <div class="topbar-actions">
             <span id="accountLabel" class="account-label"></span>
-            <button id="friendsButton" class="logout-button" type="button">Friends</button>
+            <button id="friendsButton" class="logout-button" type="button">People</button>
             <button id="newGroupButton" class="icon-button" type="button" title="Create or join a group" aria-label="Create or join a group">+</button>
             <button id="adminButton" class="icon-button hidden" type="button" title="Open administrator panel" aria-label="Open administrator panel">A</button>
             <button id="themeButton" class="icon-button" type="button" title="Change color theme" aria-label="Change color theme">&#9681;</button>
@@ -109,7 +109,6 @@
             </label>
             <div class="dialog-actions">
                 <button id="addMemberButton" class="primary-button" type="button">Add member</button>
-                <button id="removeMemberButton" class="secondary-button danger-button" type="button">Remove member</button>
             </div>
         </div>
         <div class="dialog-actions group-lifecycle-actions">
@@ -123,15 +122,25 @@
 <dialog id="friendsDialog" class="dialog admin-dialog">
     <form method="dialog">
         <div class="dialog-heading">
-            <h2>Friends</h2>
+            <h2>People</h2>
             <button class="close-button" type="button" data-close="friendsDialog" aria-label="Close">x</button>
         </div>
-        <p class="muted">Enter a nickname to find a user.</p>
-        <label>Find a user
+        <p class="muted">Enter a nickname to find a person.</p>
+        <label>Find a person
             <input id="friendSearch" placeholder="Username">
         </label>
         <div id="friendUserList" class="admin-user-list"></div>
         <p id="friendsError" class="form-error" role="alert"></p>
+    </form>
+</dialog>
+
+<dialog id="privateChatActionsDialog" class="dialog">
+    <form method="dialog">
+        <div class="dialog-heading">
+            <h2>Chat actions</h2>
+            <button class="close-button" type="button" data-close="privateChatActionsDialog" aria-label="Close">x</button>
+        </div>
+        <button id="deletePrivateChatButton" class="secondary-button danger-button" type="button">Delete person and chat</button>
     </form>
 </dialog>
 

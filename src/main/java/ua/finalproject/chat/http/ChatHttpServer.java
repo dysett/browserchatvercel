@@ -24,6 +24,7 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -274,8 +275,8 @@ public final class ChatHttpServer implements AutoCloseable {
 
     private void history(HttpExchange exchange, ChatUser user) throws IOException {
         String chat = resolveChat(query(exchange), user);
-        database.markChatRead(chat, user.id());
-        List<MessageDto> messages = database.history(chat, 100).stream().map(this::messageDto).toList();
+        publishReadEvents(database.markChatRead(chat, user.id()));
+        List<MessageDto> messages = database.historyForUser(chat, user.id(), 100).stream().map(this::messageDto).toList();
         sendJson(exchange, 200, new MessagesResponse(messages));
     }
 
@@ -461,7 +462,7 @@ public final class ChatHttpServer implements AutoCloseable {
             int userId,
             boolean owner
     ) {
-        StoredMessage last = database.history(chatName, 1).stream().findFirst().orElse(null);
+        StoredMessage last = database.historyForUser(chatName, userId, 1).stream().findFirst().orElse(null);
         return new ChatSummaryDto(
                 type,
                 key,
@@ -511,6 +512,26 @@ public final class ChatHttpServer implements AutoCloseable {
     private void markTyping(String chat, String username) {
         browserTyping.computeIfAbsent(chat, ignored -> new ConcurrentHashMap<>())
                 .put(username, System.currentTimeMillis() + TYPING_TTL_MILLIS);
+    }
+
+    private void publishReadEvents(List<StoredMessage> messages) {
+        if (messages.isEmpty()) {
+            return;
+        }
+        Set<String> recipients = new HashSet<>();
+        for (StoredMessage message : messages) {
+            if (message.recipient() != null) {
+                recipients.add(message.sender());
+                recipients.add(message.recipient());
+            } else {
+                recipients.addAll(database.groupMembers(message.chatName()));
+            }
+        }
+        ChatMessage event = ChatMessage.of(ChatCommand.EVENT_MESSAGE_UPDATE, 0, ChatMessage.fields(
+                "action", "read",
+                "chat", messages.get(0).chatName()
+        ));
+        eventHub.publish(recipients.stream().map(user -> OutboundEvent.toUser(user, event)).toList());
     }
 
     private List<String> activeTypers(String chat, String currentUsername) {
