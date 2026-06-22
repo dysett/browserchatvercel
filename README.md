@@ -47,3 +47,15 @@ Vercel hosts the browser interface as a static site. The Java server, TCP/UDP po
 4. On the Java server, set `CHAT_ALLOWED_ORIGIN` to the Vercel production URL, for example `https://browserchatvercel.vercel.app`.
 
 The backend also accepts `HTTP_PORT` or `PORT`, `CHAT_DB_URL`, `CHAT_PACKET_SECRET`, `CHAT_JWT_SECRET`, `TCP_PORT` and `UDP_PORT` as environment variables.
+
+## Temporary Public Demo
+
+For a temporary Vercel demonstration from a local computer, run these commands in separate PowerShell windows:
+
+```powershell
+.\run-server.cmd
+npm.cmd run proxy
+npm.cmd run tunnel
+```
+
+The Java server and both Node processes must remain running while the public browser version is used.

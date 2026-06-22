@@ -113,6 +113,9 @@ public final class ChatHttpServer implements AutoCloseable {
             sendJson(exchange, 200, authResponse(user));
         } catch (IllegalArgumentException e) {
             sendError(exchange, 401, "Invalid username or password");
+        } catch (RuntimeException e) {
+            e.printStackTrace();
+            sendError(exchange, 500, "Cannot process login request");
         }
     }
 
@@ -130,6 +133,9 @@ public final class ChatHttpServer implements AutoCloseable {
             sendJson(exchange, 201, authResponse(user));
         } catch (IllegalArgumentException e) {
             sendError(exchange, 409, e.getMessage());
+        } catch (RuntimeException e) {
+            e.printStackTrace();
+            sendError(exchange, 500, "Cannot process registration request");
         }
     }
 

@@ -2,6 +2,8 @@ target/
 dist/
 .vercel/
 .env
+node_modules/
+*.demo*.log
 chat.db
 *.db-journal
 .idea/
