@@ -1,4 +1,4 @@
-package ua.finalproject.chat.http;
+﻿package ua.finalproject.chat.http;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
@@ -588,7 +588,7 @@ public final class ChatHttpServer implements AutoCloseable {
             return;
         }
         exchange.getResponseHeaders().set("Access-Control-Allow-Origin", origin);
-        exchange.getResponseHeaders().set("Access-Control-Allow-Headers", "Authorization, Content-Type");
+        exchange.getResponseHeaders().set("Access-Control-Allow-Headers", "Authorization, Content-Type, ngrok-skip-browser-warning");
         exchange.getResponseHeaders().set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
         exchange.getResponseHeaders().set("Vary", "Origin");
     }

@@ -1,4 +1,4 @@
-(() => {
+﻿(() => {
     const SESSION_TOKEN_KEY = "onlineChatToken";
     localStorage.removeItem(SESSION_TOKEN_KEY);
     const API_BASE_URL = String(window.CHAT_API_URL || "").replace(/\/+$/, "");
@@ -53,7 +53,7 @@
     }
 
     async function api(path, options = {}) {
-        const headers = { ...(options.body ? { "Content-Type": "application/json" } : {}), ...(options.headers || {}) };
+        const headers = { ...(options.body ? { "Content-Type": "application/json" } : {}), "ngrok-skip-browser-warning": "true", ...(options.headers || {}) };
         if (state.token) headers.Authorization = `Bearer ${state.token}`;
         const response = await fetch(apiUrl(path), { ...options, headers });
         const payload = await response.json().catch(() => ({}));
