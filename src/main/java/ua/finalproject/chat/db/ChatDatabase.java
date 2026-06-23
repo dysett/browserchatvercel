@@ -18,12 +18,15 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Supplier;
 
 public final class ChatDatabase implements AutoCloseable {
     private static final String GENERAL_CHAT = "general";
     private static final int PBKDF2_ITERATIONS = 120_000;
     private static final int PBKDF2_BITS = 256;
+    private static final String DEFAULT_REACTION = "❤️";
+    private static final Set<String> ALLOWED_REACTIONS = Set.of("❤️", "👍", "😂", "😢", "🔥", "😮", "👏");
 
     private final Connection connection;
     private final SecureRandom random = new SecureRandom();
@@ -61,7 +64,7 @@ public final class ChatDatabase implements AutoCloseable {
 
                 try (ResultSet keys = statement.getGeneratedKeys()) {
                     if (keys.next()) {
-                        ChatUser user = new ChatUser(keys.getInt(1), login, role, false, "", false);
+                        ChatUser user = new ChatUser(keys.getInt(1), login, role, false, "", false, DEFAULT_REACTION);
                         joinGroup(user.id(), GENERAL_CHAT);
                         return user;
                     }
@@ -118,37 +121,42 @@ public final class ChatDatabase implements AutoCloseable {
             String description,
             byte[] avatar,
             String avatarContentType,
-            boolean removeAvatar
+            boolean removeAvatar,
+            String quickReaction
     ) {
         String profileDescription = cleanDescription(description);
+        String safeQuickReaction = normalizeReaction(quickReaction, DEFAULT_REACTION);
         try {
             if (avatar != null) {
                 try (PreparedStatement statement = connection.prepareStatement("""
                         update users
-                        set description = ?, avatar_data = ?, avatar_content_type = ?
+                        set description = ?, avatar_data = ?, avatar_content_type = ?, quick_reaction = ?
                         where id = ?
                         """)) {
                     statement.setString(1, profileDescription);
                     statement.setBytes(2, avatar);
                     statement.setString(3, avatarContentType);
-                    statement.setInt(4, user.id());
+                    statement.setString(4, safeQuickReaction);
+                    statement.setInt(5, user.id());
                     statement.executeUpdate();
                 }
             } else if (removeAvatar) {
                 try (PreparedStatement statement = connection.prepareStatement("""
                         update users
-                        set description = ?, avatar_data = null, avatar_content_type = null
+                        set description = ?, avatar_data = null, avatar_content_type = null, quick_reaction = ?
                         where id = ?
                         """)) {
                     statement.setString(1, profileDescription);
-                    statement.setInt(2, user.id());
+                    statement.setString(2, safeQuickReaction);
+                    statement.setInt(3, user.id());
                     statement.executeUpdate();
                 }
             } else {
                 try (PreparedStatement statement = connection.prepareStatement(
-                        "update users set description = ? where id = ?")) {
+                        "update users set description = ?, quick_reaction = ? where id = ?")) {
                     statement.setString(1, profileDescription);
-                    statement.setInt(2, user.id());
+                    statement.setString(2, safeQuickReaction);
+                    statement.setInt(3, user.id());
                     statement.executeUpdate();
                 }
             }
@@ -773,6 +781,62 @@ public final class ChatDatabase implements AutoCloseable {
         }
     }
 
+
+    public synchronized StoredMessage setMessageReaction(long messageId, ChatUser actor, String reaction) {
+        MessageTarget target = requireMessageVisible(messageId, actor.id());
+        if (target.deleted()) {
+            throw new IllegalArgumentException("Cannot react to deleted message");
+        }
+        String normalized = reaction == null ? "" : reaction.trim();
+        try {
+            String existing = null;
+            try (PreparedStatement select = connection.prepareStatement(
+                    "select reaction from message_reactions where message_id = ? and user_id = ?")) {
+                select.setLong(1, messageId);
+                select.setInt(2, actor.id());
+                try (ResultSet resultSet = select.executeQuery()) {
+                    if (resultSet.next()) {
+                        existing = resultSet.getString("reaction");
+                    }
+                }
+            }
+
+            if (normalized.isBlank() || normalized.equals(existing)) {
+                try (PreparedStatement delete = connection.prepareStatement(
+                        "delete from message_reactions where message_id = ? and user_id = ?")) {
+                    delete.setLong(1, messageId);
+                    delete.setInt(2, actor.id());
+                    delete.executeUpdate();
+                }
+            } else {
+                normalized = normalizeReaction(normalized, null);
+                try (PreparedStatement upsert = connection.prepareStatement("""
+                        insert into message_reactions(message_id, user_id, reaction, created_at)
+                        values (?, ?, ?, ?)
+                        on conflict(message_id, user_id) do update set
+                            reaction = excluded.reaction,
+                            created_at = excluded.created_at
+                        """)) {
+                    upsert.setLong(1, messageId);
+                    upsert.setInt(2, actor.id());
+                    upsert.setString(3, normalized);
+                    upsert.setString(4, Instant.now().toString());
+                    upsert.executeUpdate();
+                }
+            }
+            return historyById(messageId);
+        } catch (SQLException e) {
+            throw new IllegalStateException("Cannot update reaction", e);
+        }
+    }
+
+    public synchronized List<String> messageRecipients(StoredMessage message) {
+        if (message.recipient() != null) {
+            return List.of(message.sender(), message.recipient());
+        }
+        return groupMembers(message.chatName());
+    }
+
     @Override
     public synchronized void close() throws SQLException {
         connection.close();
@@ -830,10 +894,20 @@ public final class ChatDatabase implements AutoCloseable {
                         primary key (user_id, friend_id)
                     )
                     """);
+            statement.execute("""
+                    create table if not exists message_reactions (
+                        message_id integer not null references messages(id) on delete cascade,
+                        user_id integer not null references users(id) on delete cascade,
+                        reaction text not null,
+                        created_at text not null,
+                        primary key (message_id, user_id)
+                    )
+                    """);
             ensureColumn(statement, "users", "password_salt", "text");
             ensureColumn(statement, "users", "description", "text not null default ''");
             ensureColumn(statement, "users", "avatar_data", "blob");
             ensureColumn(statement, "users", "avatar_content_type", "text");
+            ensureColumn(statement, "users", "quick_reaction", "text not null default '❤️'");
             ensureColumn(statement, "chats", "owner_id", "integer references users(id)");
             ensureColumn(statement, "messages", "status", "text not null default 'SENT'");
             ensureColumn(statement, "messages", "edited", "integer not null default 0");
@@ -1245,11 +1319,12 @@ public final class ChatDatabase implements AutoCloseable {
                 UserRole.valueOf(resultSet.getString("role")),
                 resultSet.getInt("blocked") != 0,
                 Objects.requireNonNullElse(resultSet.getString("description"), ""),
-                resultSet.getBytes("avatar_data") != null
+                resultSet.getBytes("avatar_data") != null,
+                normalizeReaction(resultSet.getString("quick_reaction"), DEFAULT_REACTION)
         );
     }
 
-    private static StoredMessage readMessage(ResultSet resultSet) throws SQLException {
+    private StoredMessage readMessage(ResultSet resultSet) throws SQLException {
         long replyToMessageId = resultSet.getLong("reply_to_id");
         Long replyTo = resultSet.wasNull() ? null : replyToMessageId;
         return new StoredMessage(
@@ -1265,8 +1340,72 @@ public final class ChatDatabase implements AutoCloseable {
                 replyTo,
                 resultSet.getString("reply_sender"),
                 resultSet.getString("reply_body"),
-                resultSet.getInt("reply_deleted") != 0
+                resultSet.getInt("reply_deleted") != 0,
+                reactionsForMessage(resultSet.getLong("id"))
         );
+    }
+
+
+    private List<StoredMessage.MessageReaction> reactionsForMessage(long messageId) {
+        String sql = """
+                select mr.reaction, u.username
+                from message_reactions mr
+                join users u on u.id = mr.user_id
+                where mr.message_id = ?
+                order by mr.created_at, u.username
+                """;
+        java.util.LinkedHashMap<String, List<String>> grouped = new java.util.LinkedHashMap<>();
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setLong(1, messageId);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    grouped.computeIfAbsent(resultSet.getString("reaction"), ignored -> new ArrayList<>())
+                            .add(resultSet.getString("username"));
+                }
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Cannot read message reactions", e);
+        }
+        return grouped.entrySet().stream()
+                .map(entry -> new StoredMessage.MessageReaction(entry.getKey(), entry.getValue().size(), List.copyOf(entry.getValue())))
+                .toList();
+    }
+
+    private MessageTarget requireMessageVisible(long messageId, int userId) {
+        String sql = """
+                select m.id, m.deleted, c.id as chat_id, c.type, c.name, m.sender_id, m.recipient_id, cm.joined_after_message_id
+                from messages m
+                join chats c on c.id = m.chat_id
+                left join chat_members cm on cm.chat_id = c.id and cm.user_id = ?
+                where m.id = ?
+                """;
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setInt(1, userId);
+            statement.setLong(2, messageId);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    throw new IllegalArgumentException("Message not found: " + messageId);
+                }
+                String type = resultSet.getString("type");
+                int senderId = resultSet.getInt("sender_id");
+                int recipientId = resultSet.getInt("recipient_id");
+                boolean recipientNull = resultSet.wasNull();
+                long joinedAfter = resultSet.getLong("joined_after_message_id");
+                boolean hasMembership = !resultSet.wasNull();
+                boolean visible = "PRIVATE".equals(type)
+                        ? senderId == userId || (!recipientNull && recipientId == userId)
+                        : hasMembership && messageId > joinedAfter;
+                if (!visible) {
+                    throw new IllegalArgumentException("Message is not available");
+                }
+                return new MessageTarget(resultSet.getInt("deleted") != 0);
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Cannot validate message access", e);
+        }
+    }
+
+    private record MessageTarget(boolean deleted) {
     }
 
     private static String privateChatName(int firstUserId, int secondUserId) {
@@ -1280,6 +1419,21 @@ public final class ChatDatabase implements AutoCloseable {
             throw new IllegalArgumentException(field + " is required");
         }
         return value.trim();
+    }
+
+
+    private static String normalizeReaction(String value, String fallback) {
+        String reaction = value == null ? "" : value.trim();
+        if (reaction.isBlank()) {
+            if (fallback != null) {
+                return fallback;
+            }
+            throw new IllegalArgumentException("Reaction is required");
+        }
+        if (!ALLOWED_REACTIONS.contains(reaction)) {
+            throw new IllegalArgumentException("Unsupported reaction");
+        }
+        return reaction;
     }
 
     private static String cleanDescription(String value) {

@@ -6,6 +6,7 @@ public record ChatUser(
         UserRole role,
         boolean blocked,
         String description,
-        boolean hasAvatar
+        boolean hasAvatar,
+        String quickReaction
 ) {
 }

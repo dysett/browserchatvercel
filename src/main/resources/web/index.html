@@ -191,6 +191,10 @@
         <label>About
             <textarea id="profileDescriptionInput" rows="4" maxlength="280" placeholder="Tell something about yourself"></textarea>
         </label>
+        <label>Quick reaction
+            <select id="quickReactionSelect"></select>
+        </label>
+        <p class="muted profile-hint">Double-click a message to send this reaction quickly.</p>
         <button class="primary-button" type="submit">Save profile</button>
         <p id="profileError" class="form-error" role="alert"></p>
     </form>
@@ -209,6 +213,8 @@
         <p id="adminError" class="form-error" role="alert"></p>
     </form>
 </dialog>
+
+<div id="reactionMenu" class="reaction-menu hidden" role="menu" aria-label="Message reactions"></div>
 
 <div id="toast" class="toast hidden" role="status"></div>
 <script src="/config.js"></script>

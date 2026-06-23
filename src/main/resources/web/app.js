@@ -15,6 +15,7 @@
         currentMessages: [],
         replyTo: null,
         selectedMessageAction: null,
+        selectedReactionMessage: null,
         profileAvatarDataUrl: null,
         profileRemoveAvatar: false,
         avatarObjectUrl: null,
@@ -29,6 +30,7 @@
     };
 
     const SENDER_COLORS = ["#087fca", "#0c9a8e", "#4777d1", "#b06818", "#9a4eb0", "#be4a67"];
+    const REACTION_OPTIONS = ["❤️", "👍", "😂", "😢", "🔥", "😮", "👏"];
     const $ = (id) => document.getElementById(id);
     const authScreen = $("authScreen");
     const appScreen = $("appScreen");
@@ -232,6 +234,8 @@
         state.currentMessages = [];
         state.replyTo = null;
         state.selectedMessageAction = null;
+        state.selectedReactionMessage = null;
+        closeReactionMenu();
         state.profileAvatarDataUrl = null;
         state.profileRemoveAvatar = false;
         if (state.avatarObjectUrl) URL.revokeObjectURL(state.avatarObjectUrl);
@@ -511,11 +515,139 @@
         meta.className = "message-meta";
         meta.textContent = messageMeta(message, own);
         bubble.append(text, meta);
+        appendMessageReactions(bubble, message);
         if (!message.deleted) {
-            bubble.addEventListener("click", () => openMessageActions(message));
+            attachMessageInteractionHandlers(bubble, message);
         }
         row.append(bubble);
         return row;
+    }
+
+
+    function attachMessageInteractionHandlers(bubble, message) {
+        let longPressTimer = null;
+        let longPressTriggered = false;
+        let clickTimer = null;
+
+        const clearLongPress = () => {
+            window.clearTimeout(longPressTimer);
+            longPressTimer = null;
+        };
+
+        bubble.addEventListener("pointerdown", (event) => {
+            if (event.button && event.button !== 0) return;
+            longPressTriggered = false;
+            clearLongPress();
+            longPressTimer = window.setTimeout(() => {
+                longPressTriggered = true;
+                openReactionMenu(message, event.clientX, event.clientY);
+            }, 520);
+        });
+        ["pointerup", "pointerleave", "pointercancel"].forEach((name) => {
+            bubble.addEventListener(name, clearLongPress);
+        });
+        bubble.addEventListener("click", () => {
+            if (longPressTriggered) {
+                longPressTriggered = false;
+                return;
+            }
+            window.clearTimeout(clickTimer);
+            clickTimer = window.setTimeout(() => openMessageActions(message), 210);
+        });
+        bubble.addEventListener("dblclick", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            window.clearTimeout(clickTimer);
+            void reactToMessage(message, quickReaction());
+        });
+        bubble.addEventListener("contextmenu", (event) => {
+            event.preventDefault();
+            openReactionMenu(message, event.clientX, event.clientY);
+        });
+    }
+
+    function appendMessageReactions(bubble, message) {
+        const reactions = (message.reactions || []).filter((item) => item.count > 0);
+        if (!reactions.length) return;
+        const list = document.createElement("div");
+        list.className = "message-reactions";
+        reactions.forEach((item) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = `message-reaction${userReacted(message, item.reaction) ? " selected" : ""}`;
+            button.textContent = `${item.reaction} ${item.count}`;
+            button.title = (item.users || []).join(", ");
+            button.addEventListener("click", (event) => {
+                event.stopPropagation();
+                void reactToMessage(message, item.reaction);
+            });
+            list.append(button);
+        });
+        bubble.append(list);
+    }
+
+    function userReacted(message, reaction) {
+        const username = state.currentUser?.username;
+        if (!username) return false;
+        return (message.reactions || []).some((item) => item.reaction === reaction && (item.users || []).includes(username));
+    }
+
+    function quickReaction() {
+        const reaction = state.currentUser?.quickReaction;
+        return REACTION_OPTIONS.includes(reaction) ? reaction : "❤️";
+    }
+
+    function openReactionMenu(message, clientX, clientY) {
+        state.selectedReactionMessage = message;
+        messageActionsDialog.close();
+        const menu = $("reactionMenu");
+        menu.replaceChildren();
+        REACTION_OPTIONS.forEach((reaction) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = userReacted(message, reaction) ? "selected" : "";
+            button.textContent = reaction;
+            button.title = reaction === quickReaction() ? "Your quick reaction" : "React";
+            button.addEventListener("click", (event) => {
+                event.stopPropagation();
+                void reactToMessage(message, reaction);
+            });
+            menu.append(button);
+        });
+        menu.classList.remove("hidden");
+        const margin = 10;
+        const rect = menu.getBoundingClientRect();
+        const left = Math.min(Math.max(clientX - rect.width / 2, margin), window.innerWidth - rect.width - margin);
+        const top = Math.min(Math.max(clientY - rect.height - 12, margin), window.innerHeight - rect.height - margin);
+        menu.style.left = `${left}px`;
+        menu.style.top = `${top}px`;
+    }
+
+    function closeReactionMenu() {
+        const menu = $("reactionMenu");
+        if (!menu) return;
+        menu.classList.add("hidden");
+        state.selectedReactionMessage = null;
+    }
+
+    async function reactToMessage(message, reaction) {
+        closeReactionMenu();
+        try {
+            const result = await api(`/api/messages/${message.id}/reactions`, {
+                method: "POST",
+                body: JSON.stringify({ reaction })
+            });
+            if (result.message) {
+                replaceCurrentMessage(result.message);
+                renderMessages();
+            }
+        } catch (error) {
+            showToast(error.message);
+        }
+    }
+
+    function replaceCurrentMessage(updated) {
+        state.currentMessages = state.currentMessages.map((message) => message.id === updated.id ? updated : message);
     }
 
     function appendReplyQuote(bubble, message) {
@@ -814,6 +946,7 @@
         if (!user) return;
         $("profileError").textContent = "";
         $("profileDescriptionInput").value = user.description || "";
+        $("quickReactionSelect").value = quickReaction();
         $("profileAvatarInput").value = "";
         state.profileAvatarDataUrl = null;
         state.profileRemoveAvatar = false;
@@ -857,7 +990,8 @@
                 body: JSON.stringify({
                     description: $("profileDescriptionInput").value,
                     avatarDataUrl: state.profileAvatarDataUrl,
-                    removeAvatar: state.profileRemoveAvatar
+                    removeAvatar: state.profileRemoveAvatar,
+                    quickReaction: $("quickReactionSelect").value
                 })
             });
             state.currentUser = updated;
@@ -1024,6 +1158,18 @@
         }
     }
 
+
+    function populateQuickReactionSelect() {
+        const select = $("quickReactionSelect");
+        select.replaceChildren();
+        REACTION_OPTIONS.forEach((reaction) => {
+            const option = document.createElement("option");
+            option.value = reaction;
+            option.textContent = reaction;
+            select.append(option);
+        });
+    }
+
     function senderColor(sender) {
         let hash = 0;
         for (const character of String(sender || "")) hash = ((hash << 5) - hash) + character.charCodeAt(0);
@@ -1092,7 +1238,18 @@
     $("adminButton").addEventListener("click", openAdminPanel);
     $("adminUserSearch").addEventListener("input", renderAdminUsers);
     document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => $(button.dataset.close).close()));
+    document.addEventListener("click", (event) => {
+        const menu = $("reactionMenu");
+        if (!menu.classList.contains("hidden") && !menu.contains(event.target)) {
+            closeReactionMenu();
+        }
+    });
+    document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") closeReactionMenu();
+    });
+    messageList.addEventListener("scroll", closeReactionMenu);
 
+    populateQuickReactionSelect();
     setTheme(state.theme);
     if (state.token) openApp().catch(logout);
 })();

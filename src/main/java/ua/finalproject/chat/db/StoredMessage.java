@@ -1,6 +1,7 @@
 package ua.finalproject.chat.db;
 
 import java.time.Instant;
+import java.util.List;
 
 public record StoredMessage(
         long id,
@@ -15,6 +16,9 @@ public record StoredMessage(
         Long replyToMessageId,
         String replySender,
         String replyBody,
-        boolean replyDeleted
+        boolean replyDeleted,
+        List<MessageReaction> reactions
 ) {
+    public record MessageReaction(String reaction, int count, List<String> users) {
+    }
 }

@@ -301,3 +301,66 @@ input:focus, textarea:focus { border-color: var(--blue); box-shadow: 0 0 0 3px r
     .composer, .message-search { padding: 10px; }
     .composer .primary-button { padding: 8px 11px; }
 }
+
+.message-reactions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-top: 7px;
+}
+.message-reaction {
+    min-height: 24px;
+    padding: 2px 7px;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    color: var(--text);
+    background: var(--surface);
+    font-size: 13px;
+    line-height: 1;
+}
+.message-reaction:hover,
+.message-reaction.selected {
+    border-color: var(--blue);
+    color: var(--blue-dark);
+    background: var(--accent-soft);
+}
+.reaction-menu {
+    position: fixed;
+    z-index: 30;
+    display: flex;
+    gap: 6px;
+    padding: 7px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--surface);
+    box-shadow: var(--shadow);
+}
+.reaction-menu button {
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    font-size: 20px;
+    transition: transform .12s ease, background .12s ease;
+}
+.reaction-menu button:hover,
+.reaction-menu button.selected {
+    background: var(--accent-soft);
+    transform: scale(1.08);
+}
+.dialog select {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    color: var(--text);
+    background: var(--surface);
+    font: inherit;
+}
+.profile-hint {
+    margin-top: -2px;
+    font-size: 12px;
+    text-align: left;
+}

@@ -216,6 +216,10 @@ public final class ChatHttpServer implements AutoCloseable {
                 }
                 return;
             }
+            if (path.startsWith("/api/messages/") && path.endsWith("/reactions")) {
+                messageReaction(exchange, user, path, method);
+                return;
+            }
             if (path.startsWith("/api/messages/")) {
                 messageById(exchange, user, path, method);
                 return;
@@ -353,7 +357,8 @@ public final class ChatHttpServer implements AutoCloseable {
                 request.description(),
                 avatar == null ? null : avatar.content(),
                 avatar == null ? null : avatar.contentType(),
-                request.removeAvatar()
+                request.removeAvatar(),
+                request.quickReaction()
         );
         sendJson(exchange, 200, userDto(updated));
     }
@@ -386,6 +391,26 @@ public final class ChatHttpServer implements AutoCloseable {
         try (OutputStream output = exchange.getResponseBody()) {
             output.write(avatar.content());
         }
+    }
+
+
+    private void messageReaction(HttpExchange exchange, ChatUser user, String path, String method) throws IOException {
+        if (!"POST".equals(method)) {
+            methodNotAllowed(exchange, "POST");
+            return;
+        }
+        long id = parseId(pathPart(path, "/api/messages/", "/reactions"), "");
+        ReactionRequest request = readJson(exchange, ReactionRequest.class);
+        StoredMessage message = database.setMessageReaction(id, user, request.reaction());
+        ChatMessage event = ChatMessage.of(ChatCommand.EVENT_MESSAGE_UPDATE, 0, ChatMessage.fields(
+                "action", "reaction",
+                "id", Long.toString(message.id()),
+                "chat", message.chatName()
+        ));
+        eventHub.publish(database.messageRecipients(message).stream()
+                .map(recipient -> OutboundEvent.toUser(recipient, event))
+                .toList());
+        sendJson(exchange, 200, new MessageResponse(messageDto(message)));
     }
 
     private void messageById(HttpExchange exchange, ChatUser user, String path, String method) throws IOException {
@@ -792,7 +817,8 @@ public final class ChatHttpServer implements AutoCloseable {
                 registryOnline(user.username()),
                 user.blocked(),
                 user.description(),
-                user.hasAvatar()
+                user.hasAvatar(),
+                user.quickReaction()
         );
     }
 
@@ -810,7 +836,8 @@ public final class ChatHttpServer implements AutoCloseable {
                 message.replyToMessageId(),
                 message.replySender(),
                 message.replyBody(),
-                message.replyDeleted()
+                message.replyDeleted(),
+                message.reactions()
         );
     }
 
@@ -826,7 +853,8 @@ public final class ChatHttpServer implements AutoCloseable {
             boolean online,
             boolean blocked,
             String description,
-            boolean hasAvatar
+            boolean hasAvatar,
+            String quickReaction
     ) {
     }
 
@@ -875,11 +903,15 @@ public final class ChatHttpServer implements AutoCloseable {
             Long replyTo,
             String replySender,
             String replyText,
-            boolean replyDeleted
+            boolean replyDeleted,
+            List<StoredMessage.MessageReaction> reactions
     ) {
     }
 
     public record MessagesResponse(List<MessageDto> messages) {
+    }
+
+    public record MessageResponse(MessageDto message) {
     }
 
     public record TypingResponse(List<String> users) {
@@ -897,7 +929,10 @@ public final class ChatHttpServer implements AutoCloseable {
     public record EditRequest(String text) {
     }
 
-    public record ProfileUpdateRequest(String description, String avatarDataUrl, boolean removeAvatar) {
+    public record ProfileUpdateRequest(String description, String avatarDataUrl, boolean removeAvatar, String quickReaction) {
+    }
+
+    public record ReactionRequest(String reaction) {
     }
 
     private record AvatarUpload(byte[] content, String contentType) {
