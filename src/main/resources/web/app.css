@@ -383,3 +383,55 @@ input:focus, textarea:focus { border-color: var(--blue); box-shadow: 0 0 0 3px r
     font-size: 12px;
     text-align: left;
 }
+
+.conversation-profile-button {
+    border: 0;
+    background: transparent;
+    color: inherit;
+    text-align: left;
+    padding: 0;
+}
+.conversation-profile-button.profile-target {
+    cursor: pointer;
+    border-radius: 7px;
+    padding: 5px;
+    margin: -5px;
+}
+.conversation-profile-button.profile-target:hover {
+    background: var(--surface-soft);
+}
+.message-author-button,
+.profile-name-button {
+    display: inline;
+    width: auto;
+    padding: 0;
+    border: 0;
+    color: var(--sender-color, var(--blue-dark));
+    background: transparent;
+    font: inherit;
+    font-weight: 700;
+    text-align: left;
+}
+.message-author-button:hover,
+.profile-name-button:hover {
+    text-decoration: underline;
+}
+.profile-name-button {
+    color: var(--blue-dark);
+}
+.profile-view-dialog { width: min(92vw, 420px); }
+.profile-view-card {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 8px 0;
+}
+.profile-view-text { min-width: 0; }
+.profile-view-text h3 { margin: 0 0 4px; font-size: 20px; }
+.profile-view-text p { margin-bottom: 0; }
+.profile-view-description {
+    margin-top: 10px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    color: var(--text);
+}

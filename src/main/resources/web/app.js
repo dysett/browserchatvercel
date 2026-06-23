@@ -22,6 +22,7 @@
         groupAvatarDataUrl: null,
         groupRemoveAvatar: false,
         avatarObjectUrl: null,
+        viewProfileAvatarUrl: null,
         peerAvatarUrls: new Map(),
         peerAvatarLoading: new Set(),
         peerAvatarUnavailable: new Set(),
@@ -60,6 +61,7 @@
     const chatActionsDialog = $("chatActionsDialog");
     const messageActionsDialog = $("messageActionsDialog");
     const profileDialog = $("profileDialog");
+    const userProfileDialog = $("userProfileDialog");
     const adminDialog = $("adminDialog");
     let registrationMode = false;
 
@@ -263,6 +265,8 @@
         state.groupRemoveAvatar = false;
         if (state.avatarObjectUrl) URL.revokeObjectURL(state.avatarObjectUrl);
         state.avatarObjectUrl = null;
+        if (state.viewProfileAvatarUrl) URL.revokeObjectURL(state.viewProfileAvatarUrl);
+        state.viewProfileAvatarUrl = null;
         clearPeerAvatars();
         sessionStorage.removeItem(SESSION_TOKEN_KEY);
         appScreen.classList.add("hidden");
@@ -342,6 +346,13 @@
                 state.peerAvatarUrls.delete(key);
                 state.peerAvatarUnavailable.delete(key);
             });
+        }
+        if (event.command === "EVENT_MESSAGE_UPDATE"
+                && ["group-members", "group-admins"].includes(event.fields?.action)
+                && membersDialog.open
+                && state.selected?.type === "group"
+                && state.selected.key === event.fields.group) {
+            void loadGroupMembers();
         }
         if (event.command) scheduleRefresh();
     }
@@ -481,6 +492,9 @@
         messageSearch.disabled = !enabled;
         sendButton.disabled = !enabled;
         chatActionsButton.classList.toggle("hidden", !chat);
+        const identity = $("conversationIdentity");
+        identity.classList.toggle("profile-target", Boolean(chat && chat.type === "private"));
+        identity.title = chat && chat.type === "private" ? "Open user profile" : "";
         const headerAvatar = $("conversationAvatar");
         headerAvatar.replaceChildren();
         headerAvatar.classList.toggle("hidden", !chat);
@@ -534,9 +548,14 @@
         bubble.className = "message-bubble";
         bubble.style.setProperty("--sender-color", senderColor(message.sender));
         if (state.selected.type === "group" && !own) {
-            const author = document.createElement("div");
-            author.className = "message-author";
+            const author = document.createElement("button");
+            author.type = "button";
+            author.className = "message-author message-author-button";
             author.textContent = message.sender;
+            author.addEventListener("click", (event) => {
+                event.stopPropagation();
+                void openUserProfile(message.sender);
+            });
             bubble.append(author);
         }
         appendReplyQuote(bubble, message);
@@ -851,41 +870,67 @@
             const group = encodeURIComponent(state.selected.key);
             const result = await api(`/api/groups/${group}/members`);
             state.selected.owner = Boolean(result.owner);
-            $("groupOwnerLabel").textContent = result.owner ? "You created this group." : "You are a group member.";
-            $("memberManagement").classList.toggle("hidden", !result.owner);
-            $("groupAvatarManagement").classList.toggle("hidden", !result.owner);
+            state.selected.admin = Boolean(result.admin);
+            state.selected.canManage = Boolean(result.canManage);
+            $("groupOwnerLabel").textContent = result.owner
+                    ? "You created this group."
+                    : result.admin
+                            ? "You are a group admin."
+                            : "You are a group member.";
+            $("memberManagement").classList.toggle("hidden", !result.canManage);
+            $("groupAvatarManagement").classList.toggle("hidden", !result.canManage);
             $("deleteGroupButton").classList.toggle("hidden", !result.owner);
             $("leaveGroupButton").classList.toggle("hidden", result.owner);
             renderGroupAvatarEditor();
-            renderGroupMembers(result.members || [], result.owner);
+            renderGroupMembers(result.members || [], result);
         } catch (error) {
             $("membersError").textContent = error.message;
         }
     }
 
-    function renderGroupMembers(members, owner) {
+    function renderGroupMembers(members, permissions = {}) {
         const list = $("groupMembersList");
         list.replaceChildren();
-        members.forEach((username) => {
+        const owner = Boolean(permissions.owner);
+        const canManage = Boolean(permissions.canManage);
+        members.forEach((item) => {
+            const member = typeof item === "string"
+                    ? { username: item, owner: owner && item === state.currentUser.username, admin: false, online: false }
+                    : item;
+            const username = member.username;
             const row = document.createElement("div");
             row.className = "admin-user-row";
-            const name = document.createElement("div");
-            name.className = "admin-user-name";
+            const name = document.createElement("button");
+            name.type = "button";
+            name.className = "admin-user-name profile-name-button";
             name.textContent = username;
+            name.addEventListener("click", () => { void openUserProfile(username); });
             const meta = document.createElement("div");
             meta.className = "admin-user-meta";
-            meta.textContent = owner && username === state.currentUser.username ? "group creator" : "member";
+            const role = member.owner ? "group creator" : member.admin ? "group admin" : "member";
+            meta.textContent = `${role} - ${member.online ? "online" : "offline"}`;
             const text = document.createElement("div");
             text.append(name, meta);
             row.append(text);
-            if (owner && username !== state.currentUser.username) {
+            const actions = document.createElement("div");
+            actions.className = "admin-user-actions";
+            if (owner && !member.owner && username !== state.currentUser.username) {
+                const adminAction = document.createElement("button");
+                adminAction.type = "button";
+                adminAction.textContent = member.admin ? "Remove admin" : "Make admin";
+                adminAction.classList.toggle("danger", member.admin);
+                adminAction.addEventListener("click", () => { void setGroupAdmin(username, !member.admin); });
+                actions.append(adminAction);
+            }
+            if (canManage && !member.owner && username !== state.currentUser.username && !(member.admin && !owner)) {
                 const remove = document.createElement("button");
                 remove.type = "button";
                 remove.textContent = "Remove";
                 remove.classList.add("danger");
                 remove.addEventListener("click", () => { void removeGroupMember(username); });
-                row.append(remove);
+                actions.append(remove);
             }
+            if (actions.children.length) row.append(actions);
             list.append(row);
         });
     }
@@ -939,6 +984,20 @@
             state.peerAvatarUnavailable.delete(key);
             await refreshChats();
             showToast("Group avatar saved");
+        } catch (error) {
+            $("membersError").textContent = error.message;
+        }
+    }
+
+    async function setGroupAdmin(username, admin) {
+        if (!state.selected || state.selected.type !== "group") return;
+        $("membersError").textContent = "";
+        try {
+            const group = encodeURIComponent(state.selected.key);
+            await api(`/api/groups/${group}/admins`, { method: admin ? "POST" : "DELETE", body: JSON.stringify({ username }) });
+            await loadGroupMembers();
+            await refreshChats();
+            showToast(admin ? "Admin rights granted" : "Admin rights removed");
         } catch (error) {
             $("membersError").textContent = error.message;
         }
@@ -1022,6 +1081,67 @@
             showToast("Group deleted");
         } catch (error) {
             $("membersError").textContent = error.message;
+        }
+    }
+
+    async function openUserProfile(username) {
+        if (!username) return;
+        $("viewProfileError").textContent = "";
+        const openChat = $("openProfileChatButton");
+        openChat.classList.add("hidden");
+        openChat.onclick = null;
+        if (state.viewProfileAvatarUrl) URL.revokeObjectURL(state.viewProfileAvatarUrl);
+        state.viewProfileAvatarUrl = null;
+        renderViewedProfile({ username, online: false, description: "", hasAvatar: false, role: "USER" });
+        if (!userProfileDialog.open) userProfileDialog.showModal();
+        try {
+            const result = await api(`/api/users/${encodeURIComponent(username)}/profile`);
+            const user = result.user;
+            renderViewedProfile(user);
+            if (user.hasAvatar) {
+                await loadViewedProfileAvatar(user);
+            }
+            const chat = state.chats.find((item) => item.type === "private" && item.key === user.username);
+            openChat.classList.toggle("hidden", !chat);
+            openChat.onclick = chat ? () => {
+                userProfileDialog.close();
+                void selectChat(chat);
+            } : null;
+        } catch (error) {
+            $("viewProfileError").textContent = error.message;
+        }
+    }
+
+    function renderViewedProfile(user) {
+        $("viewProfileUsername").textContent = user.username || "User";
+        $("viewProfileStatus").textContent = `${user.role || "USER"} - ${user.online ? "online" : "offline"}`;
+        $("viewProfileDescription").textContent = user.description || "No profile description.";
+        const avatar = $("viewProfileAvatar");
+        avatar.replaceChildren();
+        if (state.viewProfileAvatarUrl) {
+            const image = document.createElement("img");
+            image.src = state.viewProfileAvatarUrl;
+            image.alt = "";
+            avatar.append(image);
+        } else {
+            avatar.textContent = profileInitial(user.username);
+        }
+    }
+
+    async function loadViewedProfileAvatar(user) {
+        try {
+            const response = await fetch(apiUrl(`/api/users/${encodeURIComponent(user.username)}/avatar`), {
+                headers: { Authorization: `Bearer ${state.token}`, "ngrok-skip-browser-warning": "true" }
+            });
+            if (!response.ok) throw new Error("Avatar unavailable");
+            const image = await response.blob();
+            if (state.viewProfileAvatarUrl) URL.revokeObjectURL(state.viewProfileAvatarUrl);
+            state.viewProfileAvatarUrl = URL.createObjectURL(image);
+            renderViewedProfile(user);
+        } catch (error) {
+            if (state.viewProfileAvatarUrl) URL.revokeObjectURL(state.viewProfileAvatarUrl);
+            state.viewProfileAvatarUrl = null;
+            renderViewedProfile(user);
         }
     }
 
@@ -1120,13 +1240,20 @@
             meta.className = "admin-user-meta";
             meta.textContent = user.online ? "online" : "offline";
             text.append(name, meta);
+            const actions = document.createElement("div");
+            actions.className = "admin-user-actions";
+            const viewAction = document.createElement("button");
+            viewAction.type = "button";
+            viewAction.textContent = "View";
+            viewAction.addEventListener("click", () => { void openUserProfile(user.username); });
             const action = document.createElement("button");
             const isFriend = friendNames.has(user.username);
             action.type = "button";
             action.textContent = isFriend ? "Remove" : "Add friend";
             action.classList.toggle("danger", isFriend);
             action.addEventListener("click", () => friendAction(user, isFriend ? "DELETE" : "POST"));
-            row.append(text, action);
+            actions.append(viewAction, action);
+            row.append(text, actions);
             list.append(row);
         });
         if (!users.length) {
@@ -1210,6 +1337,10 @@
         text.append(name, meta);
         const actions = document.createElement("div");
         actions.className = "admin-user-actions";
+        const viewAction = document.createElement("button");
+        viewAction.type = "button";
+        viewAction.textContent = "View";
+        viewAction.addEventListener("click", () => { void openUserProfile(user.username); });
         const blockAction = document.createElement("button");
         blockAction.type = "button";
         blockAction.textContent = user.blocked ? "Unblock" : "Block";
@@ -1222,7 +1353,7 @@
         deleteAction.classList.add("danger");
         deleteAction.disabled = user.username === state.currentUser.username;
         deleteAction.addEventListener("click", () => deleteUser(user));
-        actions.append(blockAction, deleteAction);
+        actions.append(viewAction, blockAction, deleteAction);
         row.append(text, actions);
         return row;
     }
@@ -1358,6 +1489,9 @@
     $("newGroupButton").addEventListener("click", () => { $("groupError").textContent = ""; groupDialog.showModal(); $("groupNameInput").focus(); });
     $("createGroupButton").addEventListener("click", () => groupAction("create"));
     $("joinGroupButton").addEventListener("click", () => groupAction("join"));
+    $("conversationIdentity").addEventListener("click", () => {
+        if (state.selected?.type === "private") void openUserProfile(state.selected.key);
+    });
     chatActionsButton.addEventListener("click", openChatActions);
     $("manageGroupButton").addEventListener("click", () => {
         chatActionsDialog.close();

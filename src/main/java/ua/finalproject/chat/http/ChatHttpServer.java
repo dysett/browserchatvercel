@@ -180,6 +180,14 @@ public final class ChatHttpServer implements AutoCloseable {
                 }
                 return;
             }
+            if (path.startsWith("/api/users/") && path.endsWith("/profile")) {
+                if ("GET".equals(method)) {
+                    userProfile(exchange, user, path);
+                } else {
+                    methodNotAllowed(exchange, "GET");
+                }
+                return;
+            }
             if (path.startsWith("/api/users/") && path.endsWith("/avatar")) {
                 if ("GET".equals(method)) {
                     sendUserAvatar(exchange, user, path);
@@ -240,6 +248,10 @@ public final class ChatHttpServer implements AutoCloseable {
                 groupMembers(exchange, user, path, method);
                 return;
             }
+            if (path.startsWith("/api/groups/") && path.endsWith("/admins")) {
+                groupAdmin(exchange, user, path, method);
+                return;
+            }
             if (path.startsWith("/api/groups/") && path.endsWith("/membership")) {
                 leaveGroup(exchange, user, path, method);
                 return;
@@ -283,14 +295,14 @@ public final class ChatHttpServer implements AutoCloseable {
                 String chat = database.privateChatNameWith(user.id(), peer.username());
                 summaries.add(chatSummary(
                         "private", peer.username(), peer.username(), registryOnline(peer.username()),
-                        chat, user.id(), false, peer.hasAvatar()
+                        chat, user.id(), false, false, peer.hasAvatar()
                 ));
             }
         }
         for (String group : groups) {
             summaries.add(chatSummary(
                     "group", group, group, false, group, user.id(),
-                    database.isGroupOwner(group, user.id()), database.groupHasAvatar(group)
+                    database.isGroupOwner(group, user.id()), database.canManageGroup(group, user.id()), database.groupHasAvatar(group)
             ));
         }
         sendJson(exchange, 200, new ChatsResponse(userDto(user), users, friendNames, groups, summaries));
@@ -367,6 +379,14 @@ public final class ChatHttpServer implements AutoCloseable {
         sendJson(exchange, 200, userDto(updated));
     }
 
+    private void userProfile(HttpExchange exchange, ChatUser user, String path) throws IOException {
+        String username = pathPart(path, "/api/users/", "/profile");
+        ChatUser target = database.findUser(username)
+                .filter(found -> !found.blocked() || user.role() == UserRole.ADMIN || found.username().equals(user.username()))
+                .orElseThrow(() -> new ApiException(404, "User not found"));
+        sendJson(exchange, 200, new UserProfileResponse(userDto(target)));
+    }
+
     private void sendProfileAvatar(HttpExchange exchange, ChatUser user) throws IOException {
         ChatDatabase.UserAvatar avatar = database.avatarForUser(user.id())
                 .orElseThrow(() -> new ApiException(404, "Avatar not found"));
@@ -376,12 +396,8 @@ public final class ChatHttpServer implements AutoCloseable {
     private void sendUserAvatar(HttpExchange exchange, ChatUser user, String path) throws IOException {
         String username = pathPart(path, "/api/users/", "/avatar");
         ChatUser target = database.findUser(username)
+                .filter(found -> !found.blocked() || user.role() == UserRole.ADMIN || found.username().equals(user.username()))
                 .orElseThrow(() -> new ApiException(404, "User not found"));
-        boolean isFriend = database.friendsForUser(user.id()).stream()
-                .anyMatch(friend -> friend.username().equals(target.username()));
-        if (!target.username().equals(user.username()) && user.role() != UserRole.ADMIN && !isFriend) {
-            throw new ApiException(403, "Avatar is available only for people in your chats");
-        }
         ChatDatabase.UserAvatar avatar = database.avatarForUser(target.id())
                 .orElseThrow(() -> new ApiException(404, "Avatar not found"));
         sendAvatar(exchange, avatar);
@@ -488,8 +504,10 @@ public final class ChatHttpServer implements AutoCloseable {
         database.requireGroupMembership(group, user.id());
         if ("GET".equals(method)) {
             sendJson(exchange, 200, new GroupMembersResponse(
-                    database.groupMembers(group),
-                    database.isGroupOwner(group, user.id())
+                    database.groupMembersDetailed(group).stream().map(this::groupMemberDto).toList(),
+                    database.isGroupOwner(group, user.id()),
+                    database.isGroupAdmin(group, user.id()),
+                    database.canManageGroup(group, user.id())
             ));
             return;
         }
@@ -505,7 +523,22 @@ public final class ChatHttpServer implements AutoCloseable {
             return;
         }
         ChatMessage message = ChatMessage.of(command, user.id(), ChatMessage.fields("group", group, "username", username));
-        sendJson(exchange, 200, new ActionResponse(process(user, message)));
+        String response = process(user, message);
+        publishGroupUpdate(group, "group-members");
+        sendJson(exchange, 200, new ActionResponse(response));
+    }
+
+    private void groupAdmin(HttpExchange exchange, ChatUser user, String path, String method) throws IOException {
+        String group = pathPart(path, "/api/groups/", "/admins");
+        if (!"POST".equals(method) && !"DELETE".equals(method)) {
+            methodNotAllowed(exchange, "POST, DELETE");
+            return;
+        }
+        MemberRequest request = readJson(exchange, MemberRequest.class);
+        String username = requireText(request.username(), "username");
+        database.setGroupAdmin(group, username, user, "POST".equals(method));
+        publishGroupUpdate(group, "group-admins");
+        sendJson(exchange, 200, new ActionResponse("Group administrator rights updated"));
     }
 
     private void leaveGroup(HttpExchange exchange, ChatUser user, String path, String method) throws IOException {
@@ -601,6 +634,7 @@ public final class ChatHttpServer implements AutoCloseable {
             String chatName,
             int userId,
             boolean owner,
+            boolean admin,
             boolean hasAvatar
     ) {
         StoredMessage last = database.historyForUser(chatName, userId, 1).stream().findFirst().orElse(null);
@@ -614,6 +648,7 @@ public final class ChatHttpServer implements AutoCloseable {
                 last == null ? null : last.sender(),
                 last == null ? null : last.createdAt().toString(),
                 owner,
+                admin,
                 hasAvatar
         );
     }
@@ -864,6 +899,15 @@ public final class ChatHttpServer implements AutoCloseable {
         );
     }
 
+    private GroupMemberDto groupMemberDto(ChatDatabase.GroupMember member) {
+        return new GroupMemberDto(
+                member.username(),
+                member.owner(),
+                member.admin(),
+                registryOnline(member.username())
+        );
+    }
+
     private MessageDto messageDto(StoredMessage message) {
         return new MessageDto(
                 message.id(),
@@ -912,6 +956,9 @@ public final class ChatHttpServer implements AutoCloseable {
     public record UsersResponse(List<UserDto> users) {
     }
 
+    public record UserProfileResponse(UserDto user) {
+    }
+
     public record ChatSummaryDto(
             String type,
             String key,
@@ -922,6 +969,7 @@ public final class ChatHttpServer implements AutoCloseable {
             String lastSender,
             String lastCreatedAt,
             boolean owner,
+            boolean admin,
             boolean hasAvatar
     ) {
     }
@@ -965,7 +1013,10 @@ public final class ChatHttpServer implements AutoCloseable {
     public record MemberRequest(String username) {
     }
 
-    public record GroupMembersResponse(List<String> members, boolean owner) {
+    public record GroupMemberDto(String username, boolean owner, boolean admin, boolean online) {
+    }
+
+    public record GroupMembersResponse(List<GroupMemberDto> members, boolean owner, boolean admin, boolean canManage) {
     }
 
     public record EditRequest(String text) {

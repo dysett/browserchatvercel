@@ -64,13 +64,13 @@
 
         <section class="conversation">
             <header id="conversationHeader" class="conversation-header">
-                <div class="conversation-identity">
+                <button id="conversationIdentity" class="conversation-identity conversation-profile-button" type="button" title="Open profile" aria-label="Open profile">
                     <span id="conversationAvatar" class="chat-avatar header-avatar hidden">?</span>
                     <div>
                     <h2 id="conversationTitle">Choose a chat</h2>
                     <p id="conversationStatus">Select a user or group on the left.</p>
                     </div>
-                </div>
+                </button>
                 <button id="chatActionsButton" class="icon-button group-actions-button hidden" type="button" title="Chat actions" aria-label="Chat actions">...</button>
             </header>
             <div id="messageList" class="message-list" aria-live="polite"></div>
@@ -127,7 +127,7 @@
                 <button id="removeGroupAvatarButton" class="secondary-button" type="button">Remove avatar</button>
                 <button id="saveGroupAvatarButton" class="primary-button" type="button">Save avatar</button>
             </div>
-            <p class="muted profile-hint">Only the group creator can change this avatar.</p>
+            <p class="muted profile-hint">Group creator and group admins can change this avatar.</p>
         </div>
         <div id="groupMembersList" class="admin-user-list"></div>
         <div id="memberManagement" class="member-management">
@@ -226,6 +226,28 @@
         </label>
         <div id="adminUserList" class="admin-user-list"></div>
         <p id="adminError" class="form-error" role="alert"></p>
+    </form>
+</dialog>
+
+
+<dialog id="userProfileDialog" class="dialog profile-view-dialog">
+    <form method="dialog">
+        <div class="dialog-heading">
+            <h2>User profile</h2>
+            <button class="close-button" type="button" data-close="userProfileDialog" aria-label="Close">x</button>
+        </div>
+        <div class="profile-view-card">
+            <span id="viewProfileAvatar" class="profile-avatar large">?</span>
+            <div class="profile-view-text">
+                <h3 id="viewProfileUsername">User</h3>
+                <p id="viewProfileStatus" class="muted"></p>
+                <p id="viewProfileDescription" class="profile-view-description"></p>
+            </div>
+        </div>
+        <div class="dialog-actions">
+            <button id="openProfileChatButton" class="primary-button hidden" type="button">Open chat</button>
+        </div>
+        <p id="viewProfileError" class="form-error" role="alert"></p>
     </form>
 </dialog>
 

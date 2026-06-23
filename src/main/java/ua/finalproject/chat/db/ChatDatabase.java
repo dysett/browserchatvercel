@@ -34,6 +34,9 @@ public final class ChatDatabase implements AutoCloseable {
     public record UserAvatar(byte[] content, String contentType) {
     }
 
+    public record GroupMember(String username, boolean owner, boolean admin) {
+    }
+
     public ChatDatabase(String jdbcUrl) {
         try {
             this.connection = DriverManager.getConnection(Objects.requireNonNull(jdbcUrl, "jdbcUrl"));
@@ -231,7 +234,7 @@ public final class ChatDatabase implements AutoCloseable {
             boolean removeAvatar
     ) {
         String group = requireName(groupName, "groupName");
-        requireGroupOwner(group, actor.id());
+        requireGroupManager(group, actor.id());
         try {
             if (avatar != null) {
                 try (PreparedStatement statement = connection.prepareStatement("""
@@ -421,6 +424,62 @@ public final class ChatDatabase implements AutoCloseable {
         }
     }
 
+
+    public synchronized boolean isGroupAdmin(String groupName, int userId) {
+        String group = requireName(groupName, "groupName");
+        if (isGroupOwner(group, userId)) {
+            return true;
+        }
+        String sql = """
+                select 1
+                from chat_members cm
+                join chats c on c.id = cm.chat_id
+                where c.name = ?
+                  and c.type = 'GROUP'
+                  and cm.user_id = ?
+                  and cm.is_admin = 1
+                """;
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, group);
+            statement.setInt(2, userId);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next();
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Cannot check group administrator", e);
+        }
+    }
+
+    public synchronized boolean canManageGroup(String groupName, int userId) {
+        return isGroupAdmin(groupName, userId);
+    }
+
+    public synchronized void setGroupAdmin(String groupName, String username, ChatUser actor, boolean admin) {
+        String group = requireName(groupName, "groupName");
+        requireGroupOwner(group, actor.id());
+        ChatUser target = findUser(username)
+                .orElseThrow(() -> new IllegalArgumentException("User not found: " + username));
+        if (isGroupOwner(group, target.id())) {
+            throw new IllegalArgumentException("Group creator is always the main administrator");
+        }
+        long groupId = requireGroupId(group);
+        if (!hasMembership(groupId, target.id())) {
+            throw new IllegalArgumentException("User is not a group member: " + username);
+        }
+        try (PreparedStatement statement = connection.prepareStatement("""
+                update chat_members
+                set is_admin = ?
+                where chat_id = ? and user_id = ?
+                """)) {
+            statement.setInt(1, admin ? 1 : 0);
+            statement.setLong(2, groupId);
+            statement.setInt(3, target.id());
+            statement.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException("Cannot update group administrator", e);
+        }
+    }
+
     public synchronized void requireGroupMembership(String groupName, int userId) {
         long groupId = requireGroupId(requireName(groupName, "groupName"));
         if (!hasMembership(groupId, userId)) {
@@ -430,8 +489,8 @@ public final class ChatDatabase implements AutoCloseable {
 
     private void addMembership(long chatId, int userId) {
         String sql = """
-                insert or ignore into chat_members(chat_id, user_id, joined_at, joined_after_message_id)
-                values (?, ?, ?, ?)
+                insert or ignore into chat_members(chat_id, user_id, joined_at, joined_after_message_id, is_admin)
+                values (?, ?, ?, ?, 0)
                 """;
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setLong(1, chatId);
@@ -457,18 +516,26 @@ public final class ChatDatabase implements AutoCloseable {
     }
 
     public synchronized void addGroupMember(String groupName, String username, ChatUser actor) {
-        requireGroupOwner(groupName, actor.id());
+        String group = requireName(groupName, "groupName");
+        requireGroupManager(group, actor.id());
         ChatUser user = findUser(username)
                 .orElseThrow(() -> new IllegalArgumentException("User not found: " + username));
-        joinGroup(user.id(), groupName);
+        joinGroup(user.id(), group);
     }
 
     public synchronized void removeGroupMember(String groupName, String username, ChatUser actor) {
-        requireGroupOwner(groupName, actor.id());
+        String group = requireName(groupName, "groupName");
+        requireGroupManager(group, actor.id());
         ChatUser user = findUser(username)
                 .orElseThrow(() -> new IllegalArgumentException("User not found: " + username));
+        if (isGroupOwner(group, user.id())) {
+            throw new IllegalArgumentException("Group creator cannot be removed from the group");
+        }
         if (user.id() == actor.id()) {
-            throw new IllegalArgumentException("Group owner cannot remove himself");
+            throw new IllegalArgumentException("Use Leave group to remove yourself");
+        }
+        if (isGroupAdmin(group, user.id()) && !isGroupOwner(group, actor.id())) {
+            throw new IllegalArgumentException("Only the group creator can remove another administrator");
         }
         String sql = """
                 delete from chat_members
@@ -476,7 +543,7 @@ public final class ChatDatabase implements AutoCloseable {
                   and user_id = ?
                 """;
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setString(1, requireName(groupName, "groupName"));
+            statement.setString(1, group);
             statement.setInt(2, user.id());
             if (statement.executeUpdate() == 0) {
                 throw new IllegalArgumentException("User is not a group member: " + username);
@@ -501,6 +568,34 @@ public final class ChatDatabase implements AutoCloseable {
                 List<String> members = new ArrayList<>();
                 while (resultSet.next()) {
                     members.add(resultSet.getString("username"));
+                }
+                return members;
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Cannot list group members", e);
+        }
+    }
+
+
+    public synchronized List<GroupMember> groupMembersDetailed(String groupName) {
+        String sql = """
+                select u.username,
+                       case when c.owner_id = u.id then 1 else 0 end as is_owner,
+                       cm.is_admin
+                from chat_members cm
+                join chats c on c.id = cm.chat_id
+                join users u on u.id = cm.user_id
+                where c.name = ?
+                order by is_owner desc, cm.is_admin desc, u.username
+                """;
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, requireName(groupName, "groupName"));
+            try (ResultSet resultSet = statement.executeQuery()) {
+                List<GroupMember> members = new ArrayList<>();
+                while (resultSet.next()) {
+                    boolean owner = resultSet.getInt("is_owner") != 0;
+                    boolean admin = owner || resultSet.getInt("is_admin") != 0;
+                    members.add(new GroupMember(resultSet.getString("username"), owner, admin));
                 }
                 return members;
             }
@@ -942,6 +1037,7 @@ public final class ChatDatabase implements AutoCloseable {
                         user_id integer not null references users(id),
                         joined_at text not null,
                         joined_after_message_id integer not null default 0,
+                        is_admin integer not null default 0,
                         primary key (chat_id, user_id)
                     )
                     """);
@@ -988,6 +1084,7 @@ public final class ChatDatabase implements AutoCloseable {
             ensureColumn(statement, "messages", "reply_to_message_id", "integer references messages(id)");
             ensureColumn(statement, "chat_members", "joined_at", "text");
             ensureColumn(statement, "chat_members", "joined_after_message_id", "integer not null default 0");
+            ensureColumn(statement, "chat_members", "is_admin", "integer not null default 0");
             statement.executeUpdate("update chat_members set joined_at = '1970-01-01T00:00:00Z' where joined_at is null");
             statement.executeUpdate("update chat_members set joined_after_message_id = 0 where joined_after_message_id is null");
             statement.executeUpdate("""
@@ -998,6 +1095,16 @@ public final class ChatDatabase implements AutoCloseable {
                         where cm.chat_id = chats.id
                     )
                     where type = 'GROUP' and name <> 'general' and owner_id is null
+                    """);
+            statement.executeUpdate("""
+                    update chat_members
+                    set is_admin = 1
+                    where exists (
+                        select 1
+                        from chats c
+                        where c.id = chat_members.chat_id
+                          and c.owner_id = chat_members.user_id
+                    )
                     """);
         }
         ensureChat(GENERAL_CHAT, "GROUP");
@@ -1134,6 +1241,13 @@ public final class ChatDatabase implements AutoCloseable {
     private void requireGroupOwner(String groupName, int userId) {
         if (!isGroupOwner(groupName, userId)) {
             throw new IllegalArgumentException("Only the group creator can perform this action");
+        }
+    }
+
+
+    private void requireGroupManager(String groupName, int userId) {
+        if (!isGroupAdmin(groupName, userId)) {
+            throw new IllegalArgumentException("Only the group creator or group administrator can perform this action");
         }
     }
 
