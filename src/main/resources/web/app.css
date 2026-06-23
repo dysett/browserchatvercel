@@ -147,11 +147,26 @@ input:focus, textarea:focus { border-color: var(--blue); box-shadow: 0 0 0 3px r
 
 .chat-layout {
     display: grid;
-    grid-template-columns: minmax(245px, 330px) minmax(0, 1fr);
+    grid-template-columns: minmax(180px, var(--sidebar-width, 330px)) 8px minmax(0, 1fr);
     min-height: 0;
     overflow: hidden;
 }
-.sidebar { min-height: 0; overflow: hidden; display: flex; flex-direction: column; background: var(--surface-soft); border-right: 1px solid var(--line); }
+.sidebar { min-height: 0; overflow: hidden; display: flex; flex-direction: column; background: var(--surface-soft); }
+.sidebar-resize-handle {
+    min-width: 8px;
+    cursor: col-resize;
+    background: linear-gradient(90deg, var(--line), transparent 45%, transparent 55%, var(--line));
+    border-left: 1px solid var(--line);
+    border-right: 1px solid var(--line);
+    touch-action: none;
+}
+.sidebar-resize-handle:hover,
+.sidebar-resize-handle:focus-visible,
+.resizing-sidebar .sidebar-resize-handle {
+    background: color-mix(in srgb, var(--blue) 18%, var(--line));
+    outline: none;
+}
+.resizing-sidebar { cursor: col-resize; user-select: none; }
 .profile-card {
     display: flex;
     align-items: center;
@@ -288,12 +303,16 @@ input:focus, textarea:focus { border-color: var(--blue); box-shadow: 0 0 0 3px r
 .admin-user-row button.danger { color: var(--danger); }
 .profile-editor-avatar { display: grid; place-items: center; width: 72px; height: 72px; margin: 0 auto; overflow: hidden; border-radius: 50%; }
 .profile-editor-avatar img { display: block; }
+.group-avatar-management { display: grid; gap: 10px; margin: 8px 0 12px; padding: 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-soft); }
+.group-avatar-management.hidden { display: none; }
+.group-editor-avatar { margin-bottom: 2px; }
+.group-avatar-actions { justify-content: space-between; }
 .toast { position: fixed; right: 20px; bottom: 20px; max-width: min(360px, calc(100vw - 40px)); padding: 12px 14px; border-radius: 5px; color: #fff; background: #08699f; box-shadow: var(--shadow); }
 
 @media (max-width: 720px) {
     .topbar { padding: 10px 14px; }
     .account-label { display: none; }
-    .chat-layout { grid-template-columns: minmax(145px, 42%) minmax(0, 1fr); }
+    .chat-layout { grid-template-columns: minmax(135px, var(--sidebar-width, 42vw)) 8px minmax(0, 1fr); }
     .conversation-header { padding: 12px; }
     .conversation-header h2 { max-width: 145px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .message-list { padding: 14px; }

@@ -1,5 +1,6 @@
 (() => {
     const SESSION_TOKEN_KEY = "onlineChatToken";
+    const SIDEBAR_WIDTH_KEY = "onlineChatSidebarWidth";
     localStorage.removeItem(SESSION_TOKEN_KEY);
     const API_BASE_URL = String(window.CHAT_API_URL || "").replace(/\/+$/, "");
 
@@ -18,6 +19,8 @@
         selectedReactionMessage: null,
         profileAvatarDataUrl: null,
         profileRemoveAvatar: false,
+        groupAvatarDataUrl: null,
+        groupRemoveAvatar: false,
         avatarObjectUrl: null,
         peerAvatarUrls: new Map(),
         peerAvatarLoading: new Set(),
@@ -144,10 +147,14 @@
         state.peerAvatarUnavailable.clear();
     }
 
+    function avatarCacheKey(chat) {
+        return `${chat.type}:${chat.key}`;
+    }
+
     function peerAvatarNode(chat, extraClass = "") {
         const avatar = document.createElement("span");
         avatar.className = `chat-avatar${extraClass ? ` ${extraClass}` : ""}${chat.type === "group" ? " group-avatar" : ""}`;
-        const source = chat.type === "private" ? state.peerAvatarUrls.get(chat.key) : null;
+        const source = state.peerAvatarUrls.get(avatarCacheKey(chat));
         if (source) {
             const image = document.createElement("img");
             image.src = source;
@@ -160,23 +167,37 @@
     }
 
     function ensurePeerAvatar(chat) {
-        if (chat.type !== "private" || !chat.hasAvatar || state.peerAvatarUrls.has(chat.key)
-                || state.peerAvatarLoading.has(chat.key) || state.peerAvatarUnavailable.has(chat.key)) {
+        if (!chat || (chat.type !== "private" && chat.type !== "group")) return;
+        const key = avatarCacheKey(chat);
+        if (!chat.hasAvatar) {
+            const existing = state.peerAvatarUrls.get(key);
+            if (existing) URL.revokeObjectURL(existing);
+            state.peerAvatarUrls.delete(key);
+            state.peerAvatarUnavailable.delete(key);
             return;
         }
-        state.peerAvatarLoading.add(chat.key);
-        fetch(apiUrl(`/api/users/${encodeURIComponent(chat.key)}/avatar`), {
+        if (state.peerAvatarUrls.has(key) || state.peerAvatarLoading.has(key) || state.peerAvatarUnavailable.has(key)) {
+            return;
+        }
+        state.peerAvatarLoading.add(key);
+        const avatarPath = chat.type === "group"
+                ? `/api/groups/${encodeURIComponent(chat.key)}/avatar`
+                : `/api/users/${encodeURIComponent(chat.key)}/avatar`;
+        fetch(apiUrl(avatarPath), {
             headers: { Authorization: `Bearer ${state.token}`, "ngrok-skip-browser-warning": "true" }
         }).then(async (response) => {
             if (!response.ok) throw new Error("Avatar unavailable");
             return response.blob();
         }).then((image) => {
-            state.peerAvatarUrls.set(chat.key, URL.createObjectURL(image));
+            const previous = state.peerAvatarUrls.get(key);
+            if (previous) URL.revokeObjectURL(previous);
+            state.peerAvatarUrls.set(key, URL.createObjectURL(image));
             renderChats();
             updateConversationHeader();
+            renderGroupAvatarEditor();
         }).catch(() => {
-            state.peerAvatarUnavailable.add(chat.key);
-        }).finally(() => state.peerAvatarLoading.delete(chat.key));
+            state.peerAvatarUnavailable.add(key);
+        }).finally(() => state.peerAvatarLoading.delete(key));
     }
 
     function setAuthMode(register) {
@@ -238,6 +259,8 @@
         closeReactionMenu();
         state.profileAvatarDataUrl = null;
         state.profileRemoveAvatar = false;
+        state.groupAvatarDataUrl = null;
+        state.groupRemoveAvatar = false;
         if (state.avatarObjectUrl) URL.revokeObjectURL(state.avatarObjectUrl);
         state.avatarObjectUrl = null;
         clearPeerAvatars();
@@ -311,6 +334,15 @@
             void loadTyping(state.selected);
             return;
         }
+        if (event.command === "EVENT_MESSAGE_UPDATE" && event.fields?.action === "group-avatar") {
+            state.chats.filter((chat) => chat.type === "group" && chat.key === event.fields.group).forEach((chat) => {
+                const key = avatarCacheKey(chat);
+                const avatar = state.peerAvatarUrls.get(key);
+                if (avatar) URL.revokeObjectURL(avatar);
+                state.peerAvatarUrls.delete(key);
+                state.peerAvatarUnavailable.delete(key);
+            });
+        }
         if (event.command) scheduleRefresh();
     }
 
@@ -340,10 +372,12 @@
         state.users = result.users || [];
         state.friends = result.friends || [];
         state.chats = result.chats || [];
-        state.chats.filter((chat) => chat.type === "private" && !chat.hasAvatar).forEach((chat) => {
-            const avatar = state.peerAvatarUrls.get(chat.key);
+        state.chats.filter((chat) => !chat.hasAvatar).forEach((chat) => {
+            const key = avatarCacheKey(chat);
+            const avatar = state.peerAvatarUrls.get(key);
             if (avatar) URL.revokeObjectURL(avatar);
-            state.peerAvatarUrls.delete(chat.key);
+            state.peerAvatarUrls.delete(key);
+            state.peerAvatarUnavailable.delete(key);
         });
         renderProfileSummary();
         const previous = state.selected;
@@ -449,18 +483,16 @@
         chatActionsButton.classList.toggle("hidden", !chat);
         const headerAvatar = $("conversationAvatar");
         headerAvatar.replaceChildren();
-        headerAvatar.classList.toggle("hidden", !chat || chat.type !== "private");
+        headerAvatar.classList.toggle("hidden", !chat);
         if (!chat) {
             conversationTitle.textContent = "Choose a chat";
             conversationStatus.textContent = "Select a user or group on the left.";
             return;
         }
-        if (chat.type === "private") {
-            const peerAvatar = peerAvatarNode(chat, "header-avatar");
-            headerAvatar.className = peerAvatar.className;
-            headerAvatar.replaceChildren(...peerAvatar.childNodes);
-            ensurePeerAvatar(chat);
-        }
+        const peerAvatar = peerAvatarNode(chat, "header-avatar");
+        headerAvatar.className = peerAvatar.className;
+        headerAvatar.replaceChildren(...peerAvatar.childNodes);
+        ensurePeerAvatar(chat);
         conversationTitle.textContent = chat.title;
         conversationStatus.textContent = chat.type === "group" ? "Group chat" : chat.online ? "Online" : "Offline";
     }
@@ -805,7 +837,11 @@
         $("membersDialogTitle").textContent = state.selected.title;
         $("membersError").textContent = "";
         $("memberNameInput").value = "";
+        state.groupAvatarDataUrl = null;
+        state.groupRemoveAvatar = false;
+        $("groupAvatarInput").value = "";
         membersDialog.showModal();
+        renderGroupAvatarEditor();
         await loadGroupMembers();
     }
 
@@ -817,8 +853,10 @@
             state.selected.owner = Boolean(result.owner);
             $("groupOwnerLabel").textContent = result.owner ? "You created this group." : "You are a group member.";
             $("memberManagement").classList.toggle("hidden", !result.owner);
+            $("groupAvatarManagement").classList.toggle("hidden", !result.owner);
             $("deleteGroupButton").classList.toggle("hidden", !result.owner);
             $("leaveGroupButton").classList.toggle("hidden", result.owner);
+            renderGroupAvatarEditor();
             renderGroupMembers(result.members || [], result.owner);
         } catch (error) {
             $("membersError").textContent = error.message;
@@ -850,6 +888,60 @@
             }
             list.append(row);
         });
+    }
+
+    function renderGroupAvatarEditor() {
+        if (!state.selected || state.selected.type !== "group") return;
+        const preview = $("groupAvatarPreview");
+        const placeholder = $("groupAvatarPlaceholder");
+        const source = state.groupAvatarDataUrl || state.peerAvatarUrls.get(avatarCacheKey(state.selected));
+        preview.classList.toggle("hidden", !source || state.groupRemoveAvatar);
+        placeholder.classList.toggle("hidden", Boolean(source) && !state.groupRemoveAvatar);
+        placeholder.textContent = "#";
+        if (source && !state.groupRemoveAvatar) preview.src = source;
+    }
+
+    function readGroupAvatar(file) {
+        if (!file) return;
+        if (file.size > 1_000_000) {
+            $("membersError").textContent = "Avatar must be smaller than 1 MB";
+            $("groupAvatarInput").value = "";
+            return;
+        }
+        const reader = new FileReader();
+        reader.addEventListener("load", () => {
+            state.groupAvatarDataUrl = String(reader.result);
+            state.groupRemoveAvatar = false;
+            $("membersError").textContent = "";
+            renderGroupAvatarEditor();
+        });
+        reader.readAsDataURL(file);
+    }
+
+    async function saveGroupAvatar() {
+        if (!state.selected || state.selected.type !== "group") return;
+        $("membersError").textContent = "";
+        try {
+            const group = encodeURIComponent(state.selected.key);
+            await api(`/api/groups/${group}/avatar`, {
+                method: "PUT",
+                body: JSON.stringify({
+                    avatarDataUrl: state.groupAvatarDataUrl,
+                    removeAvatar: state.groupRemoveAvatar
+                })
+            });
+            state.groupAvatarDataUrl = null;
+            $("groupAvatarInput").value = "";
+            const key = avatarCacheKey(state.selected);
+            const old = state.peerAvatarUrls.get(key);
+            if (old) URL.revokeObjectURL(old);
+            state.peerAvatarUrls.delete(key);
+            state.peerAvatarUnavailable.delete(key);
+            await refreshChats();
+            showToast("Group avatar saved");
+        } catch (error) {
+            $("membersError").textContent = error.message;
+        }
     }
 
     async function addGroupMember() {
@@ -950,6 +1042,8 @@
         $("profileAvatarInput").value = "";
         state.profileAvatarDataUrl = null;
         state.profileRemoveAvatar = false;
+        state.groupAvatarDataUrl = null;
+        state.groupRemoveAvatar = false;
         renderProfileEditor();
         profileDialog.showModal();
     }
@@ -1159,6 +1253,66 @@
     }
 
 
+    function setupSidebarResize() {
+        const layout = $("chatLayout");
+        const handle = $("sidebarResizeHandle");
+        if (!layout || !handle) return;
+        const stored = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY));
+        if (Number.isFinite(stored) && stored > 0) setSidebarWidth(stored);
+
+        let dragging = false;
+        const startResize = (event) => {
+            dragging = true;
+            document.body.classList.add("resizing-sidebar");
+            handle.setPointerCapture?.(event.pointerId);
+            event.preventDefault();
+        };
+        const moveResize = (event) => {
+            if (!dragging) return;
+            const rect = layout.getBoundingClientRect();
+            setSidebarWidth(event.clientX - rect.left);
+        };
+        const stopResize = () => {
+            if (!dragging) return;
+            dragging = false;
+            document.body.classList.remove("resizing-sidebar");
+        };
+        handle.addEventListener("pointerdown", startResize);
+        handle.addEventListener("pointermove", moveResize);
+        handle.addEventListener("pointerup", stopResize);
+        handle.addEventListener("pointercancel", stopResize);
+        handle.addEventListener("dblclick", () => {
+            localStorage.removeItem(SIDEBAR_WIDTH_KEY);
+            layout.style.removeProperty("--sidebar-width");
+        });
+        handle.addEventListener("keydown", (event) => {
+            if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+            event.preventDefault();
+            const current = Number.parseFloat(getComputedStyle(layout).getPropertyValue("--sidebar-width")) || 330;
+            if (event.key === "Home") {
+                setSidebarWidth(180);
+            } else if (event.key === "End") {
+                setSidebarWidth(window.innerWidth - 260);
+            } else {
+                setSidebarWidth(current + (event.key === "ArrowRight" ? 24 : -24));
+            }
+        });
+        window.addEventListener("resize", () => {
+            const current = Number.parseFloat(getComputedStyle(layout).getPropertyValue("--sidebar-width"));
+            if (Number.isFinite(current)) setSidebarWidth(current);
+        });
+    }
+
+    function setSidebarWidth(width) {
+        const layout = $("chatLayout");
+        if (!layout) return;
+        const min = window.innerWidth <= 720 ? 135 : 180;
+        const max = Math.max(min, window.innerWidth - (window.innerWidth <= 720 ? 170 : 320));
+        const next = Math.max(min, Math.min(max, Math.round(width)));
+        layout.style.setProperty("--sidebar-width", `${next}px`);
+        localStorage.setItem(SIDEBAR_WIDTH_KEY, String(next));
+    }
+
     function populateQuickReactionSelect() {
         const select = $("quickReactionSelect");
         select.replaceChildren();
@@ -1226,6 +1380,14 @@
         if (state.selectedMessageAction) void adminDeleteMessage(state.selectedMessageAction);
     });
     $("cancelReplyButton").addEventListener("click", clearReply);
+    $("groupAvatarInput").addEventListener("change", (event) => readGroupAvatar(event.target.files?.[0]));
+    $("removeGroupAvatarButton").addEventListener("click", () => {
+        state.groupAvatarDataUrl = null;
+        state.groupRemoveAvatar = true;
+        $("groupAvatarInput").value = "";
+        renderGroupAvatarEditor();
+    });
+    $("saveGroupAvatarButton").addEventListener("click", () => { void saveGroupAvatar(); });
     $("profileAvatarInput").addEventListener("change", (event) => readProfileAvatar(event.target.files?.[0]));
     $("removeAvatarButton").addEventListener("click", () => {
         state.profileAvatarDataUrl = null;
@@ -1249,6 +1411,7 @@
     });
     messageList.addEventListener("scroll", closeReactionMenu);
 
+    setupSidebarResize();
     populateQuickReactionSelect();
     setTheme(state.theme);
     if (state.token) openApp().catch(logout);

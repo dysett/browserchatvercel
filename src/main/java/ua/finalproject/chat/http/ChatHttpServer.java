@@ -188,6 +188,10 @@ public final class ChatHttpServer implements AutoCloseable {
                 }
                 return;
             }
+            if (path.startsWith("/api/groups/") && path.endsWith("/avatar")) {
+                groupAvatar(exchange, user, path, method);
+                return;
+            }
             if ("/api/events".equals(path)) {
                 if (!"GET".equals(method)) {
                     methodNotAllowed(exchange, "GET");
@@ -286,7 +290,7 @@ public final class ChatHttpServer implements AutoCloseable {
         for (String group : groups) {
             summaries.add(chatSummary(
                     "group", group, group, false, group, user.id(),
-                    database.isGroupOwner(group, user.id()), false
+                    database.isGroupOwner(group, user.id()), database.groupHasAvatar(group)
             ));
         }
         sendJson(exchange, 200, new ChatsResponse(userDto(user), users, friendNames, groups, summaries));
@@ -381,6 +385,44 @@ public final class ChatHttpServer implements AutoCloseable {
         ChatDatabase.UserAvatar avatar = database.avatarForUser(target.id())
                 .orElseThrow(() -> new ApiException(404, "Avatar not found"));
         sendAvatar(exchange, avatar);
+    }
+
+    private void groupAvatar(HttpExchange exchange, ChatUser user, String path, String method) throws IOException {
+        String group = pathPart(path, "/api/groups/", "/avatar");
+        database.requireGroupMembership(group, user.id());
+        if ("GET".equals(method)) {
+            ChatDatabase.UserAvatar avatar = database.avatarForGroup(group)
+                    .orElseThrow(() -> new ApiException(404, "Group avatar not found"));
+            sendAvatar(exchange, avatar);
+            return;
+        }
+        if (!"PUT".equals(method)) {
+            methodNotAllowed(exchange, "GET, PUT");
+            return;
+        }
+        GroupAvatarRequest request = readJson(exchange, GroupAvatarRequest.class);
+        AvatarUpload avatar = request.avatarDataUrl() == null || request.avatarDataUrl().isBlank()
+                ? null
+                : decodeAvatar(request.avatarDataUrl());
+        database.updateGroupAvatar(
+                group,
+                user,
+                avatar == null ? null : avatar.content(),
+                avatar == null ? null : avatar.contentType(),
+                request.removeAvatar()
+        );
+        publishGroupUpdate(group, "group-avatar");
+        sendJson(exchange, 200, new ActionResponse("Group avatar updated"));
+    }
+
+    private void publishGroupUpdate(String group, String action) {
+        ChatMessage event = ChatMessage.of(ChatCommand.EVENT_MESSAGE_UPDATE, 0, ChatMessage.fields(
+                "action", action,
+                "group", group
+        ));
+        eventHub.publish(database.groupMembers(group).stream()
+                .map(member -> OutboundEvent.toUser(member, event))
+                .toList());
     }
 
     private void sendAvatar(HttpExchange exchange, ChatDatabase.UserAvatar avatar) throws IOException {
@@ -930,6 +972,9 @@ public final class ChatHttpServer implements AutoCloseable {
     }
 
     public record ProfileUpdateRequest(String description, String avatarDataUrl, boolean removeAvatar, String quickReaction) {
+    }
+
+    public record GroupAvatarRequest(String avatarDataUrl, boolean removeAvatar) {
     }
 
     public record ReactionRequest(String reaction) {

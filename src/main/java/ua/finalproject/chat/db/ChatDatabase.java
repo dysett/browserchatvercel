@@ -187,6 +187,78 @@ public final class ChatDatabase implements AutoCloseable {
         }
     }
 
+    public synchronized Optional<UserAvatar> avatarForGroup(String groupName) {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                select avatar_data, avatar_content_type
+                from chats
+                where name = ? and type = 'GROUP' and avatar_data is not null
+                """)) {
+            statement.setString(1, requireName(groupName, "groupName"));
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (resultSet.next()) {
+                    return Optional.of(new UserAvatar(
+                            resultSet.getBytes("avatar_data"),
+                            resultSet.getString("avatar_content_type")
+                    ));
+                }
+                return Optional.empty();
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Cannot read group avatar", e);
+        }
+    }
+
+    public synchronized boolean groupHasAvatar(String groupName) {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                select 1
+                from chats
+                where name = ? and type = 'GROUP' and avatar_data is not null
+                """)) {
+            statement.setString(1, requireName(groupName, "groupName"));
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next();
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Cannot check group avatar", e);
+        }
+    }
+
+    public synchronized void updateGroupAvatar(
+            String groupName,
+            ChatUser actor,
+            byte[] avatar,
+            String avatarContentType,
+            boolean removeAvatar
+    ) {
+        String group = requireName(groupName, "groupName");
+        requireGroupOwner(group, actor.id());
+        try {
+            if (avatar != null) {
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        update chats
+                        set avatar_data = ?, avatar_content_type = ?
+                        where name = ? and type = 'GROUP'
+                        """)) {
+                    statement.setBytes(1, avatar);
+                    statement.setString(2, avatarContentType);
+                    statement.setString(3, group);
+                    statement.executeUpdate();
+                }
+            } else if (removeAvatar) {
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        update chats
+                        set avatar_data = null, avatar_content_type = null
+                        where name = ? and type = 'GROUP'
+                        """)) {
+                    statement.setString(1, group);
+                    statement.executeUpdate();
+                }
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Cannot update group avatar", e);
+        }
+    }
+
     public synchronized List<String> listUsers() {
         try (PreparedStatement statement = connection.prepareStatement("select username from users order by username");
              ResultSet resultSet = statement.executeQuery()) {
@@ -909,6 +981,8 @@ public final class ChatDatabase implements AutoCloseable {
             ensureColumn(statement, "users", "avatar_content_type", "text");
             ensureColumn(statement, "users", "quick_reaction", "text not null default '❤️'");
             ensureColumn(statement, "chats", "owner_id", "integer references users(id)");
+            ensureColumn(statement, "chats", "avatar_data", "blob");
+            ensureColumn(statement, "chats", "avatar_content_type", "text");
             ensureColumn(statement, "messages", "status", "text not null default 'SENT'");
             ensureColumn(statement, "messages", "edited", "integer not null default 0");
             ensureColumn(statement, "messages", "reply_to_message_id", "integer references messages(id)");

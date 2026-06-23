@@ -41,7 +41,7 @@
         </div>
     </header>
 
-    <section class="chat-layout">
+    <section id="chatLayout" class="chat-layout">
         <aside class="sidebar" aria-label="Chats">
             <button id="profileButton" class="profile-card" type="button" aria-label="Open profile">
                 <span id="profileAvatar" class="profile-avatar">?</span>
@@ -60,6 +60,7 @@
             </label>
             <div id="chatList" class="chat-list" role="listbox" aria-label="Chat list"></div>
         </aside>
+        <div id="sidebarResizeHandle" class="sidebar-resize-handle" role="separator" aria-orientation="vertical" aria-label="Resize chat list" tabindex="0"></div>
 
         <section class="conversation">
             <header id="conversationHeader" class="conversation-header">
@@ -114,6 +115,20 @@
             <button class="close-button" type="button" data-close="membersDialog" aria-label="Close">x</button>
         </div>
         <p id="groupOwnerLabel" class="muted"></p>
+        <div id="groupAvatarManagement" class="group-avatar-management hidden">
+            <div class="profile-editor-avatar group-editor-avatar">
+                <img id="groupAvatarPreview" class="hidden" alt="Group avatar preview">
+                <span id="groupAvatarPlaceholder" class="profile-avatar large group-avatar">#</span>
+            </div>
+            <label>Group avatar
+                <input id="groupAvatarInput" type="file" accept="image/jpeg,image/png,image/gif,image/webp">
+            </label>
+            <div class="dialog-actions group-avatar-actions">
+                <button id="removeGroupAvatarButton" class="secondary-button" type="button">Remove avatar</button>
+                <button id="saveGroupAvatarButton" class="primary-button" type="button">Save avatar</button>
+            </div>
+            <p class="muted profile-hint">Only the group creator can change this avatar.</p>
+        </div>
         <div id="groupMembersList" class="admin-user-list"></div>
         <div id="memberManagement" class="member-management">
             <label>Username
