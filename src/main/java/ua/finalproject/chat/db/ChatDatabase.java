@@ -28,6 +28,9 @@ public final class ChatDatabase implements AutoCloseable {
     private final Connection connection;
     private final SecureRandom random = new SecureRandom();
 
+    public record UserAvatar(byte[] content, String contentType) {
+    }
+
     public ChatDatabase(String jdbcUrl) {
         try {
             this.connection = DriverManager.getConnection(Objects.requireNonNull(jdbcUrl, "jdbcUrl"));
@@ -58,7 +61,7 @@ public final class ChatDatabase implements AutoCloseable {
 
                 try (ResultSet keys = statement.getGeneratedKeys()) {
                     if (keys.next()) {
-                        ChatUser user = new ChatUser(keys.getInt(1), login, role, false);
+                        ChatUser user = new ChatUser(keys.getInt(1), login, role, false, "", false);
                         joinGroup(user.id(), GENERAL_CHAT);
                         return user;
                     }
@@ -107,6 +110,72 @@ public final class ChatDatabase implements AutoCloseable {
             }
         } catch (SQLException e) {
             throw new IllegalStateException("Cannot find user", e);
+        }
+    }
+
+    public synchronized ChatUser updateProfile(
+            ChatUser user,
+            String description,
+            byte[] avatar,
+            String avatarContentType,
+            boolean removeAvatar
+    ) {
+        String profileDescription = cleanDescription(description);
+        try {
+            if (avatar != null) {
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        update users
+                        set description = ?, avatar_data = ?, avatar_content_type = ?
+                        where id = ?
+                        """)) {
+                    statement.setString(1, profileDescription);
+                    statement.setBytes(2, avatar);
+                    statement.setString(3, avatarContentType);
+                    statement.setInt(4, user.id());
+                    statement.executeUpdate();
+                }
+            } else if (removeAvatar) {
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        update users
+                        set description = ?, avatar_data = null, avatar_content_type = null
+                        where id = ?
+                        """)) {
+                    statement.setString(1, profileDescription);
+                    statement.setInt(2, user.id());
+                    statement.executeUpdate();
+                }
+            } else {
+                try (PreparedStatement statement = connection.prepareStatement(
+                        "update users set description = ? where id = ?")) {
+                    statement.setString(1, profileDescription);
+                    statement.setInt(2, user.id());
+                    statement.executeUpdate();
+                }
+            }
+            return findUserById(user.id());
+        } catch (SQLException e) {
+            throw new IllegalStateException("Cannot update profile", e);
+        }
+    }
+
+    public synchronized Optional<UserAvatar> avatarForUser(int userId) {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                select avatar_data, avatar_content_type
+                from users
+                where id = ? and avatar_data is not null
+                """)) {
+            statement.setInt(1, userId);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (resultSet.next()) {
+                    return Optional.of(new UserAvatar(
+                            resultSet.getBytes("avatar_data"),
+                            resultSet.getString("avatar_content_type")
+                    ));
+                }
+                return Optional.empty();
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Cannot read profile avatar", e);
         }
     }
 
@@ -386,15 +455,28 @@ public final class ChatDatabase implements AutoCloseable {
     }
 
     public synchronized StoredMessage savePublicMessage(int senderId, String groupName, String body) {
+        return savePublicMessage(senderId, groupName, body, null);
+    }
+
+    public synchronized StoredMessage savePublicMessage(int senderId, String groupName, String body, Long replyToMessageId) {
         String chat = requireName(groupName, "groupName");
         String messageBody = requireBody(body);
         return inTransaction(() -> {
             requireGroupMembership(chat, senderId);
-            return saveMessage(chat, senderId, null, messageBody);
+            return saveMessage(chat, senderId, null, messageBody, replyToMessageId);
         });
     }
 
     public synchronized StoredMessage savePrivateMessage(int senderId, String recipientUsername, String body) {
+        return savePrivateMessage(senderId, recipientUsername, body, null);
+    }
+
+    public synchronized StoredMessage savePrivateMessage(
+            int senderId,
+            String recipientUsername,
+            String body,
+            Long replyToMessageId
+    ) {
         String messageBody = requireBody(body);
         return inTransaction(() -> {
             ChatUser recipient = findUser(recipientUsername)
@@ -402,7 +484,7 @@ public final class ChatDatabase implements AutoCloseable {
             requireFriends(senderId, recipient.id());
             String chatName = privateChatName(senderId, recipient.id());
             ensureChat(chatName, "PRIVATE");
-            return saveMessage(chatName, senderId, recipient.id(), messageBody);
+            return saveMessage(chatName, senderId, recipient.id(), messageBody, replyToMessageId);
         });
     }
 
@@ -464,11 +546,15 @@ public final class ChatDatabase implements AutoCloseable {
         int safeLimit = Math.max(1, Math.min(limit, 100));
         String sql = """
                 select m.id, c.name as chat_name, u.username as sender, r.username as recipient,
-                       m.body, m.created_at, m.deleted, m.status, m.edited
+                       m.body, m.created_at, m.deleted, m.status, m.edited,
+                       m.reply_to_message_id as reply_to_id, reply_sender.username as reply_sender,
+                       reply.body as reply_body, reply.deleted as reply_deleted
                 from messages m
                 join chats c on c.id = m.chat_id
                 join users u on u.id = m.sender_id
                 left join users r on r.id = m.recipient_id
+                left join messages reply on reply.id = m.reply_to_message_id
+                left join users reply_sender on reply_sender.id = reply.sender_id
                 where c.name = ?
                 order by m.id desc
                 limit ?
@@ -494,11 +580,15 @@ public final class ChatDatabase implements AutoCloseable {
         int safeLimit = Math.max(1, Math.min(limit, 100));
         String sql = """
                 select m.id, c.name as chat_name, u.username as sender, r.username as recipient,
-                       m.body, m.created_at, m.deleted, m.status, m.edited
+                       m.body, m.created_at, m.deleted, m.status, m.edited,
+                       m.reply_to_message_id as reply_to_id, reply_sender.username as reply_sender,
+                       reply.body as reply_body, reply.deleted as reply_deleted
                 from messages m
                 join chats c on c.id = m.chat_id
                 join users u on u.id = m.sender_id
                 left join users r on r.id = m.recipient_id
+                left join messages reply on reply.id = m.reply_to_message_id
+                left join users reply_sender on reply_sender.id = reply.sender_id
                 left join chat_members cm on cm.chat_id = c.id and cm.user_id = ?
                 where c.name = ?
                   and (c.type <> 'GROUP' or m.id > cm.joined_after_message_id)
@@ -526,11 +616,15 @@ public final class ChatDatabase implements AutoCloseable {
         int safeLimit = Math.max(1, Math.min(limit, 50));
         String sql = """
                 select m.id, c.name as chat_name, u.username as sender, r.username as recipient,
-                       m.body, m.created_at, m.deleted, m.status, m.edited
+                       m.body, m.created_at, m.deleted, m.status, m.edited,
+                       m.reply_to_message_id as reply_to_id, reply_sender.username as reply_sender,
+                       reply.body as reply_body, reply.deleted as reply_deleted
                 from messages m
                 join chats c on c.id = m.chat_id
                 join users u on u.id = m.sender_id
                 left join users r on r.id = m.recipient_id
+                left join messages reply on reply.id = m.reply_to_message_id
+                left join users reply_sender on reply_sender.id = reply.sender_id
                 order by m.id desc
                 limit ?
                 """;
@@ -725,7 +819,8 @@ public final class ChatDatabase implements AutoCloseable {
                         created_at text not null,
                         deleted integer not null,
                         status text not null default 'SENT',
-                        edited integer not null default 0
+                        edited integer not null default 0,
+                        reply_to_message_id integer references messages(id)
                     )
                     """);
             statement.execute("""
@@ -736,9 +831,13 @@ public final class ChatDatabase implements AutoCloseable {
                     )
                     """);
             ensureColumn(statement, "users", "password_salt", "text");
+            ensureColumn(statement, "users", "description", "text not null default ''");
+            ensureColumn(statement, "users", "avatar_data", "blob");
+            ensureColumn(statement, "users", "avatar_content_type", "text");
             ensureColumn(statement, "chats", "owner_id", "integer references users(id)");
             ensureColumn(statement, "messages", "status", "text not null default 'SENT'");
             ensureColumn(statement, "messages", "edited", "integer not null default 0");
+            ensureColumn(statement, "messages", "reply_to_message_id", "integer references messages(id)");
             ensureColumn(statement, "chat_members", "joined_at", "text");
             ensureColumn(statement, "chat_members", "joined_after_message_id", "integer not null default 0");
             statement.executeUpdate("update chat_members set joined_at = '1970-01-01T00:00:00Z' where joined_at is null");
@@ -1018,11 +1117,12 @@ public final class ChatDatabase implements AutoCloseable {
         throw new IllegalArgumentException("Add this user as a friend before starting a private chat");
     }
 
-    private StoredMessage saveMessage(String chatName, int senderId, Integer recipientId, String body) {
+    private StoredMessage saveMessage(String chatName, int senderId, Integer recipientId, String body, Long replyToMessageId) {
         long chatId = ensureChat(chatName, recipientId == null ? "GROUP" : "PRIVATE");
+        validateReplyTarget(chatId, replyToMessageId);
         String sql = """
-                insert into messages(chat_id, sender_id, recipient_id, body, created_at, deleted, status)
-                values (?, ?, ?, ?, ?, 0, ?)
+                insert into messages(chat_id, sender_id, recipient_id, body, created_at, deleted, status, reply_to_message_id)
+                values (?, ?, ?, ?, ?, 0, ?, ?)
                 """;
         try (PreparedStatement statement = connection.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
             statement.setLong(1, chatId);
@@ -1035,6 +1135,11 @@ public final class ChatDatabase implements AutoCloseable {
             statement.setString(4, body);
             statement.setString(5, Instant.now().toString());
             statement.setString(6, MessageStatus.SENT.name());
+            if (replyToMessageId == null) {
+                statement.setNull(7, java.sql.Types.INTEGER);
+            } else {
+                statement.setLong(7, replyToMessageId);
+            }
             statement.executeUpdate();
 
             try (ResultSet keys = statement.getGeneratedKeys()) {
@@ -1051,11 +1156,15 @@ public final class ChatDatabase implements AutoCloseable {
     private StoredMessage historyById(long id) {
         String sql = """
                 select m.id, c.name as chat_name, u.username as sender, r.username as recipient,
-                       m.body, m.created_at, m.deleted, m.status, m.edited
+                       m.body, m.created_at, m.deleted, m.status, m.edited,
+                       m.reply_to_message_id as reply_to_id, reply_sender.username as reply_sender,
+                       reply.body as reply_body, reply.deleted as reply_deleted
                 from messages m
                 join chats c on c.id = m.chat_id
                 join users u on u.id = m.sender_id
                 left join users r on r.id = m.recipient_id
+                left join messages reply on reply.id = m.reply_to_message_id
+                left join users reply_sender on reply_sender.id = reply.sender_id
                 where m.id = ?
                 """;
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -1069,6 +1178,41 @@ public final class ChatDatabase implements AutoCloseable {
             throw new IllegalStateException("Cannot read message", e);
         }
         throw new IllegalStateException("Message not found after insert: " + id);
+    }
+
+    private void validateReplyTarget(long chatId, Long replyToMessageId) {
+        if (replyToMessageId == null) {
+            return;
+        }
+        if (replyToMessageId <= 0) {
+            throw new IllegalArgumentException("replyTo must be a positive message id");
+        }
+        try (PreparedStatement statement = connection.prepareStatement(
+                "select 1 from messages where id = ? and chat_id = ?")) {
+            statement.setLong(1, replyToMessageId);
+            statement.setLong(2, chatId);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    throw new IllegalArgumentException("Reply target does not belong to this chat");
+                }
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Cannot validate reply target", e);
+        }
+    }
+
+    private ChatUser findUserById(int userId) {
+        try (PreparedStatement statement = connection.prepareStatement("select * from users where id = ?")) {
+            statement.setInt(1, userId);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (resultSet.next()) {
+                    return readUser(resultSet);
+                }
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Cannot read updated profile", e);
+        }
+        throw new IllegalArgumentException("User not found");
     }
 
     private void changeBlocked(String username, ChatUser actor, boolean blocked) {
@@ -1099,11 +1243,15 @@ public final class ChatDatabase implements AutoCloseable {
                 resultSet.getInt("id"),
                 resultSet.getString("username"),
                 UserRole.valueOf(resultSet.getString("role")),
-                resultSet.getInt("blocked") != 0
+                resultSet.getInt("blocked") != 0,
+                Objects.requireNonNullElse(resultSet.getString("description"), ""),
+                resultSet.getBytes("avatar_data") != null
         );
     }
 
     private static StoredMessage readMessage(ResultSet resultSet) throws SQLException {
+        long replyToMessageId = resultSet.getLong("reply_to_id");
+        Long replyTo = resultSet.wasNull() ? null : replyToMessageId;
         return new StoredMessage(
                 resultSet.getLong("id"),
                 resultSet.getString("chat_name"),
@@ -1113,7 +1261,11 @@ public final class ChatDatabase implements AutoCloseable {
                 Instant.parse(resultSet.getString("created_at")),
                 resultSet.getInt("deleted") != 0,
                 MessageStatus.valueOf(resultSet.getString("status")),
-                resultSet.getInt("edited") != 0
+                resultSet.getInt("edited") != 0,
+                replyTo,
+                resultSet.getString("reply_sender"),
+                resultSet.getString("reply_body"),
+                resultSet.getInt("reply_deleted") != 0
         );
     }
 
@@ -1128,6 +1280,14 @@ public final class ChatDatabase implements AutoCloseable {
             throw new IllegalArgumentException(field + " is required");
         }
         return value.trim();
+    }
+
+    private static String cleanDescription(String value) {
+        String description = Objects.requireNonNullElse(value, "").trim();
+        if (description.length() > 280) {
+            throw new IllegalArgumentException("Profile description is too long");
+        }
+        return description;
     }
 
     private static String requireBody(String value) {

@@ -104,7 +104,12 @@ public final class ChatProcessor {
 
     private ServerResult sendPrivate(ChatMessage request, ChatUser currentUser) {
         String recipient = request.requiredField("to");
-        StoredMessage message = database.savePrivateMessage(currentUser.id(), recipient, request.requiredField("text"));
+        StoredMessage message = database.savePrivateMessage(
+                currentUser.id(),
+                recipient,
+                request.requiredField("text"),
+                optionalReplyTo(request)
+        );
         MessageStatus status = registry.isOnline(recipient) ? MessageStatus.DELIVERED : MessageStatus.SENT;
         database.updateMessageStatus(message.id(), status);
         ChatMessage event = eventMessage(ChatCommand.EVENT_MESSAGE, message, status, "created");
@@ -135,7 +140,8 @@ public final class ChatProcessor {
         StoredMessage message = database.savePublicMessage(
                 currentUser.id(),
                 request.requiredField("group"),
-                request.requiredField("text")
+                request.requiredField("text"),
+                optionalReplyTo(request)
         );
         List<OutboundEvent> events = eventsForMembers(request.requiredField("group"), message);
         return ServerResult.response(ok(request, "Group message sent"))
@@ -283,6 +289,18 @@ public final class ChatProcessor {
                 "historyData", historyData,
                 "user", currentUser.username()
         ))).withEvents(readEvents(readMessages));
+    }
+
+    private Long optionalReplyTo(ChatMessage request) {
+        String value = request.field("replyTo");
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(value);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("replyTo must be a message id");
+        }
     }
 
     private ServerResult deleteMessage(ChatMessage request, ChatUser currentUser) {

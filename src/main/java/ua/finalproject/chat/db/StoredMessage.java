@@ -11,6 +11,10 @@ public record StoredMessage(
         Instant createdAt,
         boolean deleted,
         MessageStatus status,
-        boolean edited
+        boolean edited,
+        Long replyToMessageId,
+        String replySender,
+        String replyBody,
+        boolean replyDeleted
 ) {
 }

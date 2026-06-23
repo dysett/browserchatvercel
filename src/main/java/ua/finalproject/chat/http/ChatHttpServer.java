@@ -24,6 +24,7 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.HashSet;
 import java.util.HashMap;
 import java.util.List;
@@ -159,6 +160,14 @@ public final class ChatHttpServer implements AutoCloseable {
                 sendJson(exchange, 200, userDto(user));
                 return;
             }
+            if ("/api/me".equals(path) && "PUT".equals(method)) {
+                updateProfile(exchange, user);
+                return;
+            }
+            if ("/api/me/avatar".equals(path) && "GET".equals(method)) {
+                sendProfileAvatar(exchange, user);
+                return;
+            }
             if ("/api/chats".equals(path) && "GET".equals(method)) {
                 chats(exchange, user);
                 return;
@@ -166,6 +175,14 @@ public final class ChatHttpServer implements AutoCloseable {
             if ("/api/users/search".equals(path)) {
                 if ("GET".equals(method)) {
                     userSearch(exchange, user);
+                } else {
+                    methodNotAllowed(exchange, "GET");
+                }
+                return;
+            }
+            if (path.startsWith("/api/users/") && path.endsWith("/avatar")) {
+                if ("GET".equals(method)) {
+                    sendUserAvatar(exchange, user, path);
                 } else {
                     methodNotAllowed(exchange, "GET");
                 }
@@ -256,11 +273,17 @@ public final class ChatHttpServer implements AutoCloseable {
         for (ChatUser peer : friends) {
             if (!peer.blocked()) {
                 String chat = database.privateChatNameWith(user.id(), peer.username());
-                summaries.add(chatSummary("private", peer.username(), peer.username(), registryOnline(peer.username()), chat, user.id(), false));
+                summaries.add(chatSummary(
+                        "private", peer.username(), peer.username(), registryOnline(peer.username()),
+                        chat, user.id(), false, peer.hasAvatar()
+                ));
             }
         }
         for (String group : groups) {
-            summaries.add(chatSummary("group", group, group, false, group, user.id(), database.isGroupOwner(group, user.id())));
+            summaries.add(chatSummary(
+                    "group", group, group, false, group, user.id(),
+                    database.isGroupOwner(group, user.id()), false
+            ));
         }
         sendJson(exchange, 200, new ChatsResponse(userDto(user), users, friendNames, groups, summaries));
     }
@@ -304,15 +327,65 @@ public final class ChatHttpServer implements AutoCloseable {
     private void sendMessage(HttpExchange exchange, ChatUser user) throws IOException {
         MessageRequest request = readJson(exchange, MessageRequest.class);
         String text = requireText(request.text(), "text");
+        String replyTo = request.replyTo() == null ? null : Long.toString(request.replyTo());
         ChatMessage message;
         if (request.to() != null && !request.to().isBlank() && (request.group() == null || request.group().isBlank())) {
-            message = ChatMessage.of(ChatCommand.SEND_PRIVATE, user.id(), ChatMessage.fields("to", request.to().trim(), "text", text));
+            message = ChatMessage.of(ChatCommand.SEND_PRIVATE, user.id(), ChatMessage.fields(
+                    "to", request.to().trim(), "text", text, "replyTo", replyTo
+            ));
         } else if (request.group() != null && !request.group().isBlank() && (request.to() == null || request.to().isBlank())) {
-            message = ChatMessage.of(ChatCommand.SEND_GROUP, user.id(), ChatMessage.fields("group", request.group().trim(), "text", text));
+            message = ChatMessage.of(ChatCommand.SEND_GROUP, user.id(), ChatMessage.fields(
+                    "group", request.group().trim(), "text", text, "replyTo", replyTo
+            ));
         } else {
             throw new ApiException(400, "Specify exactly one message target");
         }
         sendJson(exchange, 202, new ActionResponse(process(user, message)));
+    }
+
+    private void updateProfile(HttpExchange exchange, ChatUser user) throws IOException {
+        ProfileUpdateRequest request = readJson(exchange, ProfileUpdateRequest.class);
+        AvatarUpload avatar = request.avatarDataUrl() == null || request.avatarDataUrl().isBlank()
+                ? null
+                : decodeAvatar(request.avatarDataUrl());
+        ChatUser updated = database.updateProfile(
+                user,
+                request.description(),
+                avatar == null ? null : avatar.content(),
+                avatar == null ? null : avatar.contentType(),
+                request.removeAvatar()
+        );
+        sendJson(exchange, 200, userDto(updated));
+    }
+
+    private void sendProfileAvatar(HttpExchange exchange, ChatUser user) throws IOException {
+        ChatDatabase.UserAvatar avatar = database.avatarForUser(user.id())
+                .orElseThrow(() -> new ApiException(404, "Avatar not found"));
+        sendAvatar(exchange, avatar);
+    }
+
+    private void sendUserAvatar(HttpExchange exchange, ChatUser user, String path) throws IOException {
+        String username = pathPart(path, "/api/users/", "/avatar");
+        ChatUser target = database.findUser(username)
+                .orElseThrow(() -> new ApiException(404, "User not found"));
+        boolean isFriend = database.friendsForUser(user.id()).stream()
+                .anyMatch(friend -> friend.username().equals(target.username()));
+        if (!target.username().equals(user.username()) && user.role() != UserRole.ADMIN && !isFriend) {
+            throw new ApiException(403, "Avatar is available only for people in your chats");
+        }
+        ChatDatabase.UserAvatar avatar = database.avatarForUser(target.id())
+                .orElseThrow(() -> new ApiException(404, "Avatar not found"));
+        sendAvatar(exchange, avatar);
+    }
+
+    private void sendAvatar(HttpExchange exchange, ChatDatabase.UserAvatar avatar) throws IOException {
+        applyCors(exchange);
+        exchange.getResponseHeaders().set("Content-Type", avatar.contentType());
+        exchange.getResponseHeaders().set("Cache-Control", "no-store");
+        exchange.sendResponseHeaders(200, avatar.content().length);
+        try (OutputStream output = exchange.getResponseBody()) {
+            output.write(avatar.content());
+        }
     }
 
     private void messageById(HttpExchange exchange, ChatUser user, String path, String method) throws IOException {
@@ -460,7 +533,8 @@ public final class ChatHttpServer implements AutoCloseable {
             boolean online,
             String chatName,
             int userId,
-            boolean owner
+            boolean owner,
+            boolean hasAvatar
     ) {
         StoredMessage last = database.historyForUser(chatName, userId, 1).stream().findFirst().orElse(null);
         return new ChatSummaryDto(
@@ -472,7 +546,8 @@ public final class ChatHttpServer implements AutoCloseable {
                 last == null ? null : last.body(),
                 last == null ? null : last.sender(),
                 last == null ? null : last.createdAt().toString(),
-                owner
+                owner,
+                hasAvatar
         );
     }
 
@@ -684,6 +759,26 @@ public final class ChatHttpServer implements AutoCloseable {
         return value.trim();
     }
 
+    private static AvatarUpload decodeAvatar(String dataUrl) {
+        int separator = dataUrl.indexOf(',');
+        if (separator <= 0 || !dataUrl.substring(0, separator).endsWith(";base64")) {
+            throw new ApiException(400, "Avatar must be an image file");
+        }
+        String contentType = dataUrl.substring(5, dataUrl.indexOf(';')).toLowerCase(Locale.ROOT);
+        if (!Set.of("image/jpeg", "image/png", "image/gif", "image/webp").contains(contentType)) {
+            throw new ApiException(400, "Supported avatar formats: JPEG, PNG, GIF, WEBP");
+        }
+        try {
+            byte[] content = Base64.getDecoder().decode(dataUrl.substring(separator + 1));
+            if (content.length == 0 || content.length > 1_000_000) {
+                throw new ApiException(400, "Avatar must be smaller than 1 MB");
+            }
+            return new AvatarUpload(content, contentType);
+        } catch (IllegalArgumentException e) {
+            throw new ApiException(400, "Avatar data is invalid");
+        }
+    }
+
     private static String contentType(String resource) {
         return resource.endsWith(".css") ? "text/css; charset=utf-8"
                 : resource.endsWith(".js") ? "application/javascript; charset=utf-8"
@@ -691,7 +786,14 @@ public final class ChatHttpServer implements AutoCloseable {
     }
 
     private UserDto userDto(ChatUser user) {
-        return new UserDto(user.username(), user.role().name(), registryOnline(user.username()), user.blocked());
+        return new UserDto(
+                user.username(),
+                user.role().name(),
+                registryOnline(user.username()),
+                user.blocked(),
+                user.description(),
+                user.hasAvatar()
+        );
     }
 
     private MessageDto messageDto(StoredMessage message) {
@@ -704,7 +806,11 @@ public final class ChatHttpServer implements AutoCloseable {
                 message.createdAt().toString(),
                 message.status().name(),
                 message.edited(),
-                message.deleted()
+                message.deleted(),
+                message.replyToMessageId(),
+                message.replySender(),
+                message.replyBody(),
+                message.replyDeleted()
         );
     }
 
@@ -714,7 +820,14 @@ public final class ChatHttpServer implements AutoCloseable {
     public record AuthResponse(String token, String type, String username, String role) {
     }
 
-    public record UserDto(String username, String role, boolean online, boolean blocked) {
+    public record UserDto(
+            String username,
+            String role,
+            boolean online,
+            boolean blocked,
+            String description,
+            boolean hasAvatar
+    ) {
     }
 
     public record ChatsResponse(
@@ -738,11 +851,12 @@ public final class ChatHttpServer implements AutoCloseable {
             String lastText,
             String lastSender,
             String lastCreatedAt,
-            boolean owner
+            boolean owner,
+            boolean hasAvatar
     ) {
     }
 
-    public record MessageRequest(String to, String group, String text) {
+    public record MessageRequest(String to, String group, String text, Long replyTo) {
     }
 
     public record TypingRequest(String to, String group) {
@@ -757,7 +871,11 @@ public final class ChatHttpServer implements AutoCloseable {
             String createdAt,
             String status,
             boolean edited,
-            boolean deleted
+            boolean deleted,
+            Long replyTo,
+            String replySender,
+            String replyText,
+            boolean replyDeleted
     ) {
     }
 
@@ -777,6 +895,12 @@ public final class ChatHttpServer implements AutoCloseable {
     }
 
     public record EditRequest(String text) {
+    }
+
+    public record ProfileUpdateRequest(String description, String avatarDataUrl, boolean removeAvatar) {
+    }
+
+    private record AvatarUpload(byte[] content, String contentType) {
     }
 
     public record ActionResponse(String message) {

@@ -43,6 +43,13 @@
 
     <section class="chat-layout">
         <aside class="sidebar" aria-label="Chats">
+            <button id="profileButton" class="profile-card" type="button" aria-label="Open profile">
+                <span id="profileAvatar" class="profile-avatar">?</span>
+                <span class="profile-summary">
+                    <strong id="profileUsername">Profile</strong>
+                    <span id="profileDescription">Set your avatar and description</span>
+                </span>
+            </button>
             <div class="sidebar-heading">
                 <h2>Chats</h2>
                 <span id="chatCount" class="count-badge">0</span>
@@ -56,20 +63,25 @@
 
         <section class="conversation">
             <header id="conversationHeader" class="conversation-header">
-                <div>
+                <div class="conversation-identity">
+                    <span id="conversationAvatar" class="chat-avatar header-avatar hidden">?</span>
+                    <div>
                     <h2 id="conversationTitle">Choose a chat</h2>
                     <p id="conversationStatus">Select a user or group on the left.</p>
+                    </div>
                 </div>
-                <button id="groupActionsButton" class="icon-button group-actions-button hidden" type="button" title="Group settings" aria-label="Group settings">...</button>
-                <button id="privateChatActionsButton" class="icon-button group-actions-button hidden" type="button" title="Delete chat" aria-label="Delete chat">...</button>
+                <button id="chatActionsButton" class="icon-button group-actions-button hidden" type="button" title="Chat actions" aria-label="Chat actions">...</button>
             </header>
-            <label class="message-search">
-                <span class="visually-hidden">Search messages</span>
-                <input id="messageSearch" placeholder="Search in this chat" disabled>
-            </label>
             <div id="messageList" class="message-list" aria-live="polite"></div>
             <form id="composerForm" class="composer">
                 <p id="typingIndicator" class="typing-indicator"></p>
+                <div id="replyPreview" class="reply-preview hidden">
+                    <div>
+                        <strong id="replyAuthor"></strong>
+                        <p id="replyText"></p>
+                    </div>
+                    <button id="cancelReplyButton" class="close-button" type="button" aria-label="Cancel reply">x</button>
+                </div>
                 <textarea id="messageInput" rows="1" maxlength="4000" placeholder="Write a message" disabled></textarea>
                 <button id="sendButton" class="primary-button" type="submit" disabled>Send</button>
             </form>
@@ -134,13 +146,53 @@
     </form>
 </dialog>
 
-<dialog id="privateChatActionsDialog" class="dialog">
+<dialog id="chatActionsDialog" class="dialog">
     <form method="dialog">
         <div class="dialog-heading">
             <h2>Chat actions</h2>
-            <button class="close-button" type="button" data-close="privateChatActionsDialog" aria-label="Close">x</button>
+            <button class="close-button" type="button" data-close="chatActionsDialog" aria-label="Close">x</button>
         </div>
-        <button id="deletePrivateChatButton" class="secondary-button danger-button" type="button">Delete person and chat</button>
+        <label>Search in chat
+            <input id="messageSearch" placeholder="Text or sender" disabled>
+        </label>
+        <button id="clearMessageSearchButton" class="secondary-button" type="button">Clear search</button>
+        <button id="manageGroupButton" class="secondary-button hidden" type="button">Group settings</button>
+        <button id="deletePrivateChatButton" class="secondary-button danger-button hidden" type="button">Delete person and chat</button>
+    </form>
+</dialog>
+
+<dialog id="messageActionsDialog" class="dialog">
+    <form method="dialog">
+        <div class="dialog-heading">
+            <h2>Message actions</h2>
+            <button class="close-button" type="button" data-close="messageActionsDialog" aria-label="Close">x</button>
+        </div>
+        <button id="replyMessageButton" class="primary-button" type="button">Reply</button>
+        <button id="editMessageButton" class="secondary-button hidden" type="button">Edit</button>
+        <button id="deleteMessageButton" class="secondary-button danger-button hidden" type="button">Delete</button>
+        <button id="adminDeleteMessageButton" class="secondary-button danger-button hidden" type="button">Remove as administrator</button>
+    </form>
+</dialog>
+
+<dialog id="profileDialog" class="dialog">
+    <form id="profileForm" method="dialog">
+        <div class="dialog-heading">
+            <h2>Profile</h2>
+            <button class="close-button" type="button" data-close="profileDialog" aria-label="Close">x</button>
+        </div>
+        <div class="profile-editor-avatar">
+            <img id="profileAvatarPreview" class="hidden" alt="Profile avatar preview">
+            <span id="profileAvatarPlaceholder" class="profile-avatar large">?</span>
+        </div>
+        <label>Avatar
+            <input id="profileAvatarInput" type="file" accept="image/jpeg,image/png,image/gif,image/webp">
+        </label>
+        <button id="removeAvatarButton" class="secondary-button" type="button">Remove avatar</button>
+        <label>About
+            <textarea id="profileDescriptionInput" rows="4" maxlength="280" placeholder="Tell something about yourself"></textarea>
+        </label>
+        <button class="primary-button" type="submit">Save profile</button>
+        <p id="profileError" class="form-error" role="alert"></p>
     </form>
 </dialog>
 

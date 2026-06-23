@@ -13,6 +13,14 @@
         chats: [],
         selected: null,
         currentMessages: [],
+        replyTo: null,
+        selectedMessageAction: null,
+        profileAvatarDataUrl: null,
+        profileRemoveAvatar: false,
+        avatarObjectUrl: null,
+        peerAvatarUrls: new Map(),
+        peerAvatarLoading: new Set(),
+        peerAvatarUnavailable: new Set(),
         eventController: null,
         eventReconnectTimer: null,
         refreshTimer: null,
@@ -40,12 +48,13 @@
     const conversationTitle = $("conversationTitle");
     const conversationStatus = $("conversationStatus");
     const typingIndicator = $("typingIndicator");
-    const groupActionsButton = $("groupActionsButton");
-    const privateChatActionsButton = $("privateChatActionsButton");
+    const chatActionsButton = $("chatActionsButton");
     const groupDialog = $("groupDialog");
     const membersDialog = $("membersDialog");
     const friendsDialog = $("friendsDialog");
-    const privateChatActionsDialog = $("privateChatActionsDialog");
+    const chatActionsDialog = $("chatActionsDialog");
+    const messageActionsDialog = $("messageActionsDialog");
+    const profileDialog = $("profileDialog");
     const adminDialog = $("adminDialog");
     let registrationMode = false;
 
@@ -84,6 +93,90 @@
         return state.currentUser && state.currentUser.role === "ADMIN";
     }
 
+    function profileInitial(username) {
+        return String(username || "?").trim().slice(0, 1).toUpperCase() || "?";
+    }
+
+    function renderProfileSummary() {
+        const user = state.currentUser;
+        $("profileUsername").textContent = user ? user.username : "Profile";
+        $("profileDescription").textContent = user?.description || "Set your avatar and description";
+        const avatar = $("profileAvatar");
+        avatar.replaceChildren();
+        if (state.avatarObjectUrl) {
+            const image = document.createElement("img");
+            image.src = state.avatarObjectUrl;
+            image.alt = "";
+            avatar.append(image);
+        } else {
+            avatar.textContent = profileInitial(user?.username);
+        }
+    }
+
+    async function loadProfileAvatar() {
+        if (!state.currentUser?.hasAvatar) {
+            if (state.avatarObjectUrl) URL.revokeObjectURL(state.avatarObjectUrl);
+            state.avatarObjectUrl = null;
+            renderProfileSummary();
+            return;
+        }
+        try {
+            const response = await fetch(apiUrl("/api/me/avatar"), {
+                headers: { Authorization: `Bearer ${state.token}`, "ngrok-skip-browser-warning": "true" }
+            });
+            if (!response.ok) throw new Error("Avatar unavailable");
+            const image = await response.blob();
+            if (state.avatarObjectUrl) URL.revokeObjectURL(state.avatarObjectUrl);
+            state.avatarObjectUrl = URL.createObjectURL(image);
+        } catch (error) {
+            if (state.avatarObjectUrl) URL.revokeObjectURL(state.avatarObjectUrl);
+            state.avatarObjectUrl = null;
+        }
+        renderProfileSummary();
+    }
+
+    function clearPeerAvatars() {
+        state.peerAvatarUrls.forEach((url) => URL.revokeObjectURL(url));
+        state.peerAvatarUrls.clear();
+        state.peerAvatarLoading.clear();
+        state.peerAvatarUnavailable.clear();
+    }
+
+    function peerAvatarNode(chat, extraClass = "") {
+        const avatar = document.createElement("span");
+        avatar.className = `chat-avatar${extraClass ? ` ${extraClass}` : ""}${chat.type === "group" ? " group-avatar" : ""}`;
+        const source = chat.type === "private" ? state.peerAvatarUrls.get(chat.key) : null;
+        if (source) {
+            const image = document.createElement("img");
+            image.src = source;
+            image.alt = "";
+            avatar.append(image);
+        } else {
+            avatar.textContent = chat.type === "group" ? "#" : profileInitial(chat.title);
+        }
+        return avatar;
+    }
+
+    function ensurePeerAvatar(chat) {
+        if (chat.type !== "private" || !chat.hasAvatar || state.peerAvatarUrls.has(chat.key)
+                || state.peerAvatarLoading.has(chat.key) || state.peerAvatarUnavailable.has(chat.key)) {
+            return;
+        }
+        state.peerAvatarLoading.add(chat.key);
+        fetch(apiUrl(`/api/users/${encodeURIComponent(chat.key)}/avatar`), {
+            headers: { Authorization: `Bearer ${state.token}`, "ngrok-skip-browser-warning": "true" }
+        }).then(async (response) => {
+            if (!response.ok) throw new Error("Avatar unavailable");
+            return response.blob();
+        }).then((image) => {
+            state.peerAvatarUrls.set(chat.key, URL.createObjectURL(image));
+            renderChats();
+            updateConversationHeader();
+        }).catch(() => {
+            state.peerAvatarUnavailable.add(chat.key);
+        }).finally(() => state.peerAvatarLoading.delete(chat.key));
+    }
+
     function setAuthMode(register) {
         registrationMode = register;
         authTitle.textContent = register ? "Create account" : "Online Chat";
@@ -117,6 +210,7 @@
         $("adminButton").classList.toggle("hidden", !isAdmin());
         authScreen.classList.add("hidden");
         appScreen.classList.remove("hidden");
+        await loadProfileAvatar();
         await refreshChats();
         connectEventStream();
     }
@@ -136,6 +230,13 @@
         state.chats = [];
         state.selected = null;
         state.currentMessages = [];
+        state.replyTo = null;
+        state.selectedMessageAction = null;
+        state.profileAvatarDataUrl = null;
+        state.profileRemoveAvatar = false;
+        if (state.avatarObjectUrl) URL.revokeObjectURL(state.avatarObjectUrl);
+        state.avatarObjectUrl = null;
+        clearPeerAvatars();
         sessionStorage.removeItem(SESSION_TOKEN_KEY);
         appScreen.classList.add("hidden");
         authScreen.classList.remove("hidden");
@@ -147,6 +248,7 @@
         messageInput.disabled = true;
         messageSearch.disabled = true;
         sendButton.disabled = true;
+        renderProfileSummary();
         $("adminButton").classList.add("hidden");
     }
 
@@ -234,6 +336,12 @@
         state.users = result.users || [];
         state.friends = result.friends || [];
         state.chats = result.chats || [];
+        state.chats.filter((chat) => chat.type === "private" && !chat.hasAvatar).forEach((chat) => {
+            const avatar = state.peerAvatarUrls.get(chat.key);
+            if (avatar) URL.revokeObjectURL(avatar);
+            state.peerAvatarUrls.delete(chat.key);
+        });
+        renderProfileSummary();
         const previous = state.selected;
         if (previous) {
             state.selected = state.chats.find((chat) => sameChat(chat, previous)) || null;
@@ -292,6 +400,7 @@
 
         const dot = document.createElement("span");
         dot.className = `online-dot${chat.online ? " online" : ""}`;
+        const avatar = peerAvatarNode(chat);
         const text = document.createElement("span");
         const title = document.createElement("div");
         title.className = "chat-title";
@@ -300,7 +409,7 @@
         preview.className = "chat-kind";
         preview.textContent = chatPreview(chat);
         text.append(title, preview);
-        button.append(dot, text);
+        button.append(dot, avatar, text);
         if (chat.unreadCount > 0) {
             const unread = document.createElement("span");
             unread.className = "unread-badge";
@@ -308,6 +417,7 @@
             button.append(unread);
         }
         button.addEventListener("click", () => selectChat(chat));
+        ensurePeerAvatar(chat);
         return button;
     }
 
@@ -319,6 +429,7 @@
 
     async function selectChat(chat) {
         state.selected = chat;
+        clearReply();
         renderChats();
         updateConversationHeader();
         await loadMessages();
@@ -331,12 +442,20 @@
         messageInput.disabled = !enabled;
         messageSearch.disabled = !enabled;
         sendButton.disabled = !enabled;
-        groupActionsButton.classList.toggle("hidden", !chat || chat.type !== "group");
-        privateChatActionsButton.classList.toggle("hidden", !chat || chat.type !== "private");
+        chatActionsButton.classList.toggle("hidden", !chat);
+        const headerAvatar = $("conversationAvatar");
+        headerAvatar.replaceChildren();
+        headerAvatar.classList.toggle("hidden", !chat || chat.type !== "private");
         if (!chat) {
             conversationTitle.textContent = "Choose a chat";
             conversationStatus.textContent = "Select a user or group on the left.";
             return;
+        }
+        if (chat.type === "private") {
+            const peerAvatar = peerAvatarNode(chat, "header-avatar");
+            headerAvatar.className = peerAvatar.className;
+            headerAvatar.replaceChildren(...peerAvatar.childNodes);
+            ensurePeerAvatar(chat);
         }
         conversationTitle.textContent = chat.title;
         conversationStatus.textContent = chat.type === "group" ? "Group chat" : chat.online ? "Online" : "Offline";
@@ -374,6 +493,7 @@
         const own = message.sender === state.currentUser.username;
         const row = document.createElement("article");
         row.className = `message-row${own ? " own" : ""}`;
+        row.id = `message-${message.id}`;
         const bubble = document.createElement("div");
         bubble.className = "message-bubble";
         bubble.style.setProperty("--sender-color", senderColor(message.sender));
@@ -383,6 +503,7 @@
             author.textContent = message.sender;
             bubble.append(author);
         }
+        appendReplyQuote(bubble, message);
         const text = document.createElement("div");
         text.className = `message-text${message.edited ? " message-edited" : ""}`;
         text.textContent = message.text;
@@ -390,9 +511,28 @@
         meta.className = "message-meta";
         meta.textContent = messageMeta(message, own);
         bubble.append(text, meta);
-        appendMessageActions(bubble, row, message, own);
+        if (!message.deleted) {
+            bubble.addEventListener("click", () => openMessageActions(message));
+        }
         row.append(bubble);
         return row;
+    }
+
+    function appendReplyQuote(bubble, message) {
+        if (!message.replyTo) return;
+        const quote = document.createElement("button");
+        quote.type = "button";
+        quote.className = "reply-quote";
+        const author = document.createElement("strong");
+        author.textContent = message.replySender || "Message";
+        const body = document.createElement("span");
+        body.textContent = message.replyDeleted ? "Deleted message" : message.replyText || "Message unavailable";
+        quote.append(author, body);
+        quote.addEventListener("click", (event) => {
+            event.stopPropagation();
+            document.getElementById(`message-${message.replyTo}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+        });
+        bubble.append(quote);
     }
 
     function messageMeta(message, own) {
@@ -402,41 +542,32 @@
         return parts.filter(Boolean).join(" - ");
     }
 
-    function appendMessageActions(bubble, row, message, own) {
-        if (message.deleted) return;
-        const actions = document.createElement("div");
-        actions.className = "message-actions";
-        if (own) {
-            actions.append(actionButton("Edit", () => editMessage(message)), actionButton("Delete", () => deleteMessage(message)));
-            row.addEventListener("contextmenu", (event) => {
-                event.preventDefault();
-                ownMessageMenu(message);
-            });
-        } else if (isAdmin()) {
-            actions.append(actionButton("Remove", () => adminDeleteMessage(message)));
-            row.addEventListener("contextmenu", (event) => {
-                event.preventDefault();
-                adminDeleteMessage(message);
-            });
-        }
-        if (actions.children.length) bubble.append(actions);
+    function openMessageActions(message) {
+        state.selectedMessageAction = message;
+        const own = message.sender === state.currentUser.username;
+        $("replyMessageButton").classList.toggle("hidden", message.deleted);
+        $("editMessageButton").classList.toggle("hidden", !own || message.deleted);
+        $("deleteMessageButton").classList.toggle("hidden", !own || message.deleted);
+        $("adminDeleteMessageButton").classList.toggle("hidden", !isAdmin() || own || message.deleted);
+        messageActionsDialog.showModal();
     }
 
-    function actionButton(label, action) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.textContent = label;
-        button.addEventListener("click", action);
-        return button;
+    function replyToMessage(message) {
+        state.replyTo = message;
+        $("replyAuthor").textContent = `Replying to ${message.sender}`;
+        $("replyText").textContent = message.deleted ? "Deleted message" : message.text;
+        $("replyPreview").classList.remove("hidden");
+        messageActionsDialog.close();
+        messageInput.focus();
     }
 
-    function ownMessageMenu(message) {
-        const action = window.prompt("Type edit or delete.");
-        if (action && action.toLowerCase() === "edit") editMessage(message);
-        if (action && action.toLowerCase() === "delete") deleteMessage(message);
+    function clearReply() {
+        state.replyTo = null;
+        $("replyPreview").classList.add("hidden");
     }
 
     async function editMessage(message) {
+        messageActionsDialog.close();
         const text = window.prompt("Edit message", message.text);
         if (text === null || !text.trim()) return;
         try {
@@ -448,6 +579,7 @@
     }
 
     async function deleteMessage(message) {
+        messageActionsDialog.close();
         if (!window.confirm("Delete this message?")) return;
         try {
             await api(`/api/messages/${message.id}`, { method: "DELETE" });
@@ -458,6 +590,7 @@
     }
 
     async function adminDeleteMessage(message) {
+        messageActionsDialog.close();
         if (!window.confirm("Remove this message as administrator?")) return;
         try {
             await api(`/api/admin/messages/${message.id}`, { method: "DELETE" });
@@ -473,8 +606,10 @@
         if (!text || !state.selected) return;
         try {
             const body = state.selected.type === "group" ? { group: state.selected.key, text } : { to: state.selected.key, text };
+            if (state.replyTo) body.replyTo = state.replyTo.id;
             await api("/api/messages", { method: "POST", body: JSON.stringify(body) });
             messageInput.value = "";
+            clearReply();
             autoResizeMessageInput();
             await refreshChats();
         } catch (error) {
@@ -636,7 +771,7 @@
         if (!window.confirm(`Delete the chat with ${username} and all its messages?`)) return;
         try {
             await api(`/api/friends/${encodeURIComponent(username)}`, { method: "DELETE" });
-            privateChatActionsDialog.close();
+            chatActionsDialog.close();
             await refreshChats();
             showToast("Chat deleted");
         } catch (error) {
@@ -644,9 +779,13 @@
         }
     }
 
-    function openPrivateChatActions() {
-        if (!state.selected || state.selected.type !== "private") return;
-        privateChatActionsDialog.showModal();
+    function openChatActions() {
+        const chat = state.selected;
+        if (!chat) return;
+        $("manageGroupButton").classList.toggle("hidden", chat.type !== "group");
+        $("deletePrivateChatButton").classList.toggle("hidden", chat.type !== "private");
+        chatActionsDialog.showModal();
+        messageSearch.focus();
     }
 
     async function deleteGroup() {
@@ -668,6 +807,72 @@
         state.friendSearchResults = [];
         renderFriendUsers();
         friendsDialog.showModal();
+    }
+
+    async function openProfile() {
+        const user = state.currentUser;
+        if (!user) return;
+        $("profileError").textContent = "";
+        $("profileDescriptionInput").value = user.description || "";
+        $("profileAvatarInput").value = "";
+        state.profileAvatarDataUrl = null;
+        state.profileRemoveAvatar = false;
+        renderProfileEditor();
+        profileDialog.showModal();
+    }
+
+    function renderProfileEditor() {
+        const image = $("profileAvatarPreview");
+        const placeholder = $("profileAvatarPlaceholder");
+        const source = state.profileAvatarDataUrl || state.avatarObjectUrl;
+        image.classList.toggle("hidden", !source || state.profileRemoveAvatar);
+        placeholder.classList.toggle("hidden", Boolean(source) && !state.profileRemoveAvatar);
+        placeholder.textContent = profileInitial(state.currentUser?.username);
+        if (source && !state.profileRemoveAvatar) image.src = source;
+    }
+
+    function readProfileAvatar(file) {
+        if (!file) return;
+        if (file.size > 1_000_000) {
+            $("profileError").textContent = "Avatar must be smaller than 1 MB";
+            $("profileAvatarInput").value = "";
+            return;
+        }
+        const reader = new FileReader();
+        reader.addEventListener("load", () => {
+            state.profileAvatarDataUrl = String(reader.result);
+            state.profileRemoveAvatar = false;
+            $("profileError").textContent = "";
+            renderProfileEditor();
+        });
+        reader.readAsDataURL(file);
+    }
+
+    async function saveProfile(event) {
+        event.preventDefault();
+        $("profileError").textContent = "";
+        try {
+            const updated = await api("/api/me", {
+                method: "PUT",
+                body: JSON.stringify({
+                    description: $("profileDescriptionInput").value,
+                    avatarDataUrl: state.profileAvatarDataUrl,
+                    removeAvatar: state.profileRemoveAvatar
+                })
+            });
+            state.currentUser = updated;
+            if (state.profileAvatarDataUrl) {
+                await loadProfileAvatar();
+            } else if (state.profileRemoveAvatar) {
+                if (state.avatarObjectUrl) URL.revokeObjectURL(state.avatarObjectUrl);
+                state.avatarObjectUrl = null;
+            }
+            renderProfileSummary();
+            profileDialog.close();
+            showToast("Profile saved");
+        } catch (error) {
+            $("profileError").textContent = error.message;
+        }
     }
 
     function renderFriendUsers() {
@@ -834,19 +1039,55 @@
     $("logoutButton").addEventListener("click", logout);
     $("themeButton").addEventListener("click", () => setTheme(state.theme === "light" ? "dark" : "light"));
     $("friendsButton").addEventListener("click", openFriendsPanel);
+    $("profileButton").addEventListener("click", () => { void openProfile(); });
     $("chatSearch").addEventListener("input", renderChats);
     messageSearch.addEventListener("input", renderMessages);
+    $("clearMessageSearchButton").addEventListener("click", () => {
+        messageSearch.value = "";
+        renderMessages();
+        messageSearch.focus();
+    });
     $("composerForm").addEventListener("submit", sendMessage);
     messageInput.addEventListener("input", () => { autoResizeMessageInput(); void maybeSendTyping(); });
+    messageInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
+            $("composerForm").requestSubmit();
+        }
+    });
     $("newGroupButton").addEventListener("click", () => { $("groupError").textContent = ""; groupDialog.showModal(); $("groupNameInput").focus(); });
     $("createGroupButton").addEventListener("click", () => groupAction("create"));
     $("joinGroupButton").addEventListener("click", () => groupAction("join"));
-    groupActionsButton.addEventListener("click", () => { void openGroupActions(); });
+    chatActionsButton.addEventListener("click", openChatActions);
+    $("manageGroupButton").addEventListener("click", () => {
+        chatActionsDialog.close();
+        void openGroupActions();
+    });
     $("addMemberButton").addEventListener("click", () => { void addGroupMember(); });
     $("leaveGroupButton").addEventListener("click", () => { void leaveGroup(); });
     $("deleteGroupButton").addEventListener("click", () => { void deleteGroup(); });
-    privateChatActionsButton.addEventListener("click", openPrivateChatActions);
     $("deletePrivateChatButton").addEventListener("click", () => { void deletePrivateChat(); });
+    $("replyMessageButton").addEventListener("click", () => {
+        if (state.selectedMessageAction) replyToMessage(state.selectedMessageAction);
+    });
+    $("editMessageButton").addEventListener("click", () => {
+        if (state.selectedMessageAction) void editMessage(state.selectedMessageAction);
+    });
+    $("deleteMessageButton").addEventListener("click", () => {
+        if (state.selectedMessageAction) void deleteMessage(state.selectedMessageAction);
+    });
+    $("adminDeleteMessageButton").addEventListener("click", () => {
+        if (state.selectedMessageAction) void adminDeleteMessage(state.selectedMessageAction);
+    });
+    $("cancelReplyButton").addEventListener("click", clearReply);
+    $("profileAvatarInput").addEventListener("change", (event) => readProfileAvatar(event.target.files?.[0]));
+    $("removeAvatarButton").addEventListener("click", () => {
+        state.profileAvatarDataUrl = null;
+        state.profileRemoveAvatar = true;
+        $("profileAvatarInput").value = "";
+        renderProfileEditor();
+    });
+    $("profileForm").addEventListener("submit", (event) => { void saveProfile(event); });
     $("friendSearch").addEventListener("input", () => { void searchFriendUsers(); });
     $("adminButton").addEventListener("click", openAdminPanel);
     $("adminUserSearch").addEventListener("input", renderAdminUsers);
