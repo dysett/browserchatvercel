@@ -37,7 +37,12 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.stream.Collectors;
 
+/**
+ * HTTP-сервер для вебверсії чату.
+ * Він віддає статичні файли інтерфейсу та обробляє REST API для авторизації, повідомлень, профілів, груп і адміністрування.
+ */
 public final class ChatHttpServer implements AutoCloseable {
+    // MIME-тип для JSON-відповідей API.
     private static final String JSON = "application/json; charset=utf-8";
     private static final long TYPING_TTL_MILLIS = 2_500;
     private static final long BROWSER_PRESENCE_TTL_MILLIS = 8_000;
@@ -49,11 +54,15 @@ public final class ChatHttpServer implements AutoCloseable {
     private final ExecutorService executor;
     private final BrowserEventHub eventHub;
     private final Set<String> allowedOrigins;
+    private final List<ApiRoute> apiRoutes;
     private final Map<String, Map<String, Long>> browserTyping = new ConcurrentHashMap<>();
     private final Map<String, Long> browserLastSeen = new ConcurrentHashMap<>();
     private final ObjectMapper mapper = new ObjectMapper()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
+    /**
+     * Створює HTTP-сервер, налаштовує пул потоків і реєструє маршрути API.
+     */
     public ChatHttpServer(int port, ChatDatabase database, ChatServer chatServer, JwtTokenService tokenService) throws IOException {
         this(port, database, chatServer, tokenService, "");
     }
@@ -75,6 +84,7 @@ public final class ChatHttpServer implements AutoCloseable {
                 .map(String::trim)
                 .filter(origin -> !origin.isBlank())
                 .collect(Collectors.toUnmodifiableSet());
+        this.apiRoutes = createApiRoutes();
         this.server.setExecutor(executor);
         createContexts(this.tokenService);
     }
@@ -94,6 +104,9 @@ public final class ChatHttpServer implements AutoCloseable {
         executor.shutdownNow();
     }
 
+    /**
+     * Реєструє HTTP-маршрути: статичні файли, авторизацію та захищене API.
+     */
     private void createContexts(JwtTokenService tokenService) {
         server.createContext("/api/login", this::handleLogin);
         server.createContext("/api/register", this::handleRegister);
@@ -102,6 +115,42 @@ public final class ChatHttpServer implements AutoCloseable {
         server.createContext("/", this::handleStatic);
     }
 
+    private List<ApiRoute> createApiRoutes() {
+        return List.of(
+                new ApiRoute("GET", "/api/me", (exchange, user) -> sendJson(exchange, 200, userDto(user))),
+                new ApiRoute("PUT", "/api/me", this::updateProfile),
+                new ApiRoute("GET", "/api/me/avatar", this::sendProfileAvatar),
+                new ApiRoute("GET", "/api/chats", this::chats),
+                new ApiRoute("GET", "/api/users/search", this::userSearch),
+                new ApiRoute("GET", "/api/events", (exchange, user) -> eventHub.open(exchange, user.username(), () -> markBrowserOnline(user.username()))),
+                new ApiRoute("GET", "/api/typing", this::typingUsers),
+                new ApiRoute("POST", "/api/typing", this::typing),
+                new ApiRoute("GET", "/api/messages", this::history),
+                new ApiRoute("POST", "/api/messages", this::sendMessage),
+                new ApiRoute("POST", "/api/groups", this::groupAction)
+        );
+    }
+
+    private boolean routeProtectedApi(HttpExchange exchange, ChatUser user, String path, String method) throws IOException {
+        List<ApiRoute> pathRoutes = apiRoutes.stream()
+                .filter(route -> route.path().equals(path))
+                .toList();
+        if (pathRoutes.isEmpty()) {
+            return false;
+        }
+        for (ApiRoute route : pathRoutes) {
+            if (route.method().equals(method)) {
+                route.handler().handle(exchange, user);
+                return true;
+            }
+        }
+        methodNotAllowed(exchange, pathRoutes.stream().map(ApiRoute::method).collect(Collectors.joining(", ")));
+        return true;
+    }
+
+    /**
+     * Обробляє POST /api/login і повертає JWT-токен після успішної авторизації.
+     */
     private void handleLogin(HttpExchange exchange) throws IOException {
         if (handleCorsPreflight(exchange)) {
             return;
@@ -122,6 +171,9 @@ public final class ChatHttpServer implements AutoCloseable {
         }
     }
 
+    /**
+     * Обробляє POST /api/register і створює нового користувача.
+     */
     private void handleRegister(HttpExchange exchange) throws IOException {
         if (handleCorsPreflight(exchange)) {
             return;
@@ -146,6 +198,10 @@ public final class ChatHttpServer implements AutoCloseable {
         return new AuthResponse(tokenService.create(user.username()), "Bearer", user.username(), user.role().name());
     }
 
+    /**
+     * Основний маршрутизатор захищених API-запитів.
+     * До цього блоку запит доходить тільки після перевірки Bearer-токена.
+     */
     private void handleProtectedApi(HttpExchange exchange) throws IOException {
         if (handleCorsPreflight(exchange)) {
             return;
@@ -155,7 +211,11 @@ public final class ChatHttpServer implements AutoCloseable {
             markBrowserOnline(user.username());
             String path = exchange.getRequestURI().getPath();
             String method = exchange.getRequestMethod();
+            if (routeProtectedApi(exchange, user, path, method)) {
+                return;
+            }
 
+            // Дані поточного користувача потрібні інтерфейсу після входу.
             if ("/api/me".equals(path) && "GET".equals(method)) {
                 sendJson(exchange, 200, userDto(user));
                 return;
@@ -200,6 +260,7 @@ public final class ChatHttpServer implements AutoCloseable {
                 groupAvatar(exchange, user, path, method);
                 return;
             }
+            // SSE-потік тримає браузер підключеним для real-time оновлень.
             if ("/api/events".equals(path)) {
                 if (!"GET".equals(method)) {
                     methodNotAllowed(exchange, "GET");
@@ -282,6 +343,9 @@ public final class ChatHttpServer implements AutoCloseable {
         }
     }
 
+    /**
+     * Формує список чатів, який показується у лівій панелі інтерфейсу.
+     */
     private void chats(HttpExchange exchange, ChatUser user) throws IOException {
         List<UserDto> users = user.role() == UserRole.ADMIN
                 ? database.listUsersDetailed().stream().map(this::userDto).toList()
@@ -344,6 +408,9 @@ public final class ChatHttpServer implements AutoCloseable {
         sendJson(exchange, 200, new TypingResponse(activeTypers(chat, user.username())));
     }
 
+    /**
+     * Приймає повідомлення з браузера, передає його в ChatServer і публікує події для інших клієнтів.
+     */
     private void sendMessage(HttpExchange exchange, ChatUser user) throws IOException {
         MessageRequest request = readJson(exchange, MessageRequest.class);
         String text = requireText(request.text(), "text");
@@ -363,6 +430,9 @@ public final class ChatHttpServer implements AutoCloseable {
         sendJson(exchange, 202, new ActionResponse(process(user, message)));
     }
 
+    /**
+     * Оновлює профіль користувача: опис, аватарку та швидку реакцію.
+     */
     private void updateProfile(HttpExchange exchange, ChatUser user) throws IOException {
         ProfileUpdateRequest request = readJson(exchange, ProfileUpdateRequest.class);
         AvatarUpload avatar = request.avatarDataUrl() == null || request.avatarDataUrl().isBlank()
@@ -376,9 +446,13 @@ public final class ChatHttpServer implements AutoCloseable {
                 request.removeAvatar(),
                 request.quickReaction()
         );
+        publishUserUpdate(updated.username(), "profile-updated");
         sendJson(exchange, 200, userDto(updated));
     }
 
+    /**
+     * Віддає публічну частину профілю іншого користувача.
+     */
     private void userProfile(HttpExchange exchange, ChatUser user, String path) throws IOException {
         String username = pathPart(path, "/api/users/", "/profile");
         ChatUser target = database.findUser(username)
@@ -403,6 +477,9 @@ public final class ChatHttpServer implements AutoCloseable {
         sendAvatar(exchange, avatar);
     }
 
+    /**
+     * Обробляє отримання та оновлення аватарки групового чату.
+     */
     private void groupAvatar(HttpExchange exchange, ChatUser user, String path, String method) throws IOException {
         String group = pathPart(path, "/api/groups/", "/avatar");
         database.requireGroupMembership(group, user.id());
@@ -427,6 +504,13 @@ public final class ChatHttpServer implements AutoCloseable {
                 avatar == null ? null : avatar.contentType(),
                 request.removeAvatar()
         );
+        StoredMessage systemMessage = database.saveGroupEvent(
+                group,
+                user,
+                request.removeAvatar() ? "removed-avatar" : "changed-avatar",
+                null
+        );
+        publishMessageCreated(systemMessage);
         publishGroupUpdate(group, "group-avatar");
         sendJson(exchange, 200, new ActionResponse("Group avatar updated"));
     }
@@ -441,6 +525,38 @@ public final class ChatHttpServer implements AutoCloseable {
                 .toList());
     }
 
+    private void publishMessageCreated(StoredMessage message) {
+        ChatMessage event = messageEvent(ChatCommand.EVENT_MESSAGE, message, "created");
+        eventHub.publish(database.messageRecipients(message).stream()
+                .map(recipient -> OutboundEvent.toUser(recipient, event))
+                .toList());
+    }
+
+    private void publishUserUpdate(String username, String action) {
+        ChatMessage event = ChatMessage.of(ChatCommand.EVENT_STATUS, 0, ChatMessage.fields(
+                "state", action,
+                "username", username,
+                "message", "User updated: " + username
+        ));
+        eventHub.publish(List.of(OutboundEvent.broadcast(event)));
+    }
+
+    private ChatMessage messageEvent(ChatCommand command, StoredMessage message, String action) {
+        return ChatMessage.of(command, 0, ChatMessage.fields(
+                "id", Long.toString(message.id()),
+                "chat", message.chatName(),
+                "from", message.sender(),
+                "to", message.recipient(),
+                "text", message.body(),
+                "createdAt", message.createdAt().toString(),
+                "status", message.status().name(),
+                "edited", Boolean.toString(message.edited()),
+                "deleted", Boolean.toString(message.deleted()),
+                "system", Boolean.toString(message.system()),
+                "action", action
+        ));
+    }
+
     private void sendAvatar(HttpExchange exchange, ChatDatabase.UserAvatar avatar) throws IOException {
         applyCors(exchange);
         exchange.getResponseHeaders().set("Content-Type", avatar.contentType());
@@ -452,6 +568,9 @@ public final class ChatHttpServer implements AutoCloseable {
     }
 
 
+    /**
+     * Обробляє реакції на повідомлення та повідомляє інші відкриті клієнти про оновлення.
+     */
     private void messageReaction(HttpExchange exchange, ChatUser user, String path, String method) throws IOException {
         if (!"POST".equals(method)) {
             methodNotAllowed(exchange, "POST");
@@ -499,6 +618,9 @@ public final class ChatHttpServer implements AutoCloseable {
         sendJson(exchange, 200, new ActionResponse(process(user, message)));
     }
 
+    /**
+     * Повертає учасників групи або додає/видаляє учасника залежно від HTTP-методу.
+     */
     private void groupMembers(HttpExchange exchange, ChatUser user, String path, String method) throws IOException {
         String group = pathPart(path, "/api/groups/", "/members");
         database.requireGroupMembership(group, user.id());
@@ -528,6 +650,9 @@ public final class ChatHttpServer implements AutoCloseable {
         sendJson(exchange, 200, new ActionResponse(response));
     }
 
+    /**
+     * Видає або забирає права адміністратора групи.
+     */
     private void groupAdmin(HttpExchange exchange, ChatUser user, String path, String method) throws IOException {
         String group = pathPart(path, "/api/groups/", "/admins");
         if (!"POST".equals(method) && !"DELETE".equals(method)) {
@@ -536,7 +661,10 @@ public final class ChatHttpServer implements AutoCloseable {
         }
         MemberRequest request = readJson(exchange, MemberRequest.class);
         String username = requireText(request.username(), "username");
-        database.setGroupAdmin(group, username, user, "POST".equals(method));
+        boolean admin = "POST".equals(method);
+        database.setGroupAdmin(group, username, user, admin);
+        StoredMessage systemMessage = database.saveGroupEvent(group, user, admin ? "made-admin" : "removed-admin", username);
+        publishMessageCreated(systemMessage);
         publishGroupUpdate(group, "group-admins");
         sendJson(exchange, 200, new ActionResponse("Group administrator rights updated"));
     }
@@ -610,6 +738,9 @@ public final class ChatHttpServer implements AutoCloseable {
         sendJson(exchange, 200, new ActionResponse(process(user, message)));
     }
 
+    /**
+     * Передає команду у внутрішній серверний процесор і повертає текстову відповідь.
+     */
     private String process(ChatUser user, ChatMessage request) {
         ServerResult result = chatServer.processHttp(request, user);
         if (!Boolean.parseBoolean(result.response().field("ok"))) {
@@ -646,6 +777,7 @@ public final class ChatHttpServer implements AutoCloseable {
                 database.unreadMessages(chatName, userId),
                 last == null ? null : last.body(),
                 last == null ? null : last.sender(),
+                last != null && last.system(),
                 last == null ? null : last.createdAt().toString(),
                 owner,
                 admin,
@@ -762,6 +894,9 @@ public final class ChatHttpServer implements AutoCloseable {
         }
     }
 
+    /**
+     * Читає тіло HTTP-запиту та перетворює JSON у Java-об’єкт потрібного типу.
+     */
     private <T> T readJson(HttpExchange exchange, Class<T> type) throws IOException {
         try (InputStream input = exchange.getRequestBody()) {
             return mapper.readValue(input, type);
@@ -770,6 +905,9 @@ public final class ChatHttpServer implements AutoCloseable {
         }
     }
 
+    /**
+     * Серіалізує об’єкт у JSON і відправляє його як HTTP-відповідь.
+     */
     private void sendJson(HttpExchange exchange, int status, Object value) throws IOException {
         byte[] body = mapper.writeValueAsBytes(value);
         applyCors(exchange);
@@ -781,6 +919,9 @@ public final class ChatHttpServer implements AutoCloseable {
         }
     }
 
+    /**
+     * Відправляє помилку API в єдиному JSON-форматі.
+     */
     private void sendError(HttpExchange exchange, int status, String error) throws IOException {
         sendJson(exchange, status, Map.of("error", error));
     }
@@ -800,6 +941,9 @@ public final class ChatHttpServer implements AutoCloseable {
         return true;
     }
 
+    /**
+     * Додає CORS-заголовки, щоб браузер міг робити запити до сервера.
+     */
     private void applyCors(HttpExchange exchange) {
         String origin = exchange.getRequestHeaders().getFirst("Origin");
         if (origin == null || !allowedOrigins.contains(origin)) {
@@ -861,6 +1005,9 @@ public final class ChatHttpServer implements AutoCloseable {
         return value.trim();
     }
 
+    /**
+     * Розбирає data URL аватарки та перевіряє тип і розмір зображення.
+     */
     private static AvatarUpload decodeAvatar(String dataUrl) {
         int separator = dataUrl.indexOf(',');
         if (separator <= 0 || !dataUrl.substring(0, separator).endsWith(";base64")) {
@@ -919,12 +1066,21 @@ public final class ChatHttpServer implements AutoCloseable {
                 message.status().name(),
                 message.edited(),
                 message.deleted(),
+                message.system(),
                 message.replyToMessageId(),
                 message.replySender(),
                 message.replyBody(),
                 message.replyDeleted(),
                 message.reactions()
         );
+    }
+
+    @FunctionalInterface
+    private interface ProtectedApiHandler {
+        void handle(HttpExchange exchange, ChatUser user) throws IOException;
+    }
+
+    private record ApiRoute(String method, String path, ProtectedApiHandler handler) {
     }
 
     public record Credentials(String username, String password) {
@@ -967,6 +1123,7 @@ public final class ChatHttpServer implements AutoCloseable {
             int unreadCount,
             String lastText,
             String lastSender,
+            boolean lastSystem,
             String lastCreatedAt,
             boolean owner,
             boolean admin,
@@ -990,6 +1147,7 @@ public final class ChatHttpServer implements AutoCloseable {
             String status,
             boolean edited,
             boolean deleted,
+            boolean system,
             Long replyTo,
             String replySender,
             String replyText,

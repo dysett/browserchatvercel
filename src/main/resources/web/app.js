@@ -1,9 +1,13 @@
 (() => {
+    // Увесь код інтерфейсу ізольований у функції, щоб не засмічувати глобальний об’єкт window.
+
+    // Ключі localStorage/sessionStorage для збереження стану інтерфейсу між перезавантаженнями сторінки.
     const SESSION_TOKEN_KEY = "onlineChatToken";
     const SIDEBAR_WIDTH_KEY = "onlineChatSidebarWidth";
     localStorage.removeItem(SESSION_TOKEN_KEY);
     const API_BASE_URL = String(window.CHAT_API_URL || "").replace(/\/+$/, "");
 
+    // Глобальний стан клієнта: поточний користувач, список чатів, вибраний чат, повідомлення, аватарки та підключення до подій.
     const state = {
         token: sessionStorage.getItem(SESSION_TOKEN_KEY),
         currentUser: null,
@@ -33,6 +37,7 @@
         theme: localStorage.getItem("onlineChatTheme") || "light"
     };
 
+    // Кольори допомагають візуально відрізняти авторів повідомлень у групових чатах.
     const SENDER_COLORS = ["#087fca", "#0c9a8e", "#4777d1", "#b06818", "#9a4eb0", "#be4a67"];
     const REACTION_OPTIONS = ["❤️", "👍", "😂", "😢", "🔥", "😮", "👏"];
     const $ = (id) => document.getElementById(id);
@@ -65,6 +70,9 @@
     const adminDialog = $("adminDialog");
     let registrationMode = false;
 
+    /**
+     * Перемикає світлу або темну тему та зберігає вибір у браузері.
+     */
     function setTheme(theme) {
         state.theme = theme;
         document.documentElement.dataset.theme = theme;
@@ -72,6 +80,10 @@
         $("themeButton").textContent = theme === "light" ? "Dark" : "Light";
     }
 
+    /**
+     * Спільна функція для запитів до backend API.
+     * Вона автоматично додає JWT-токен і обробляє помилки авторизації.
+     */
     async function api(path, options = {}) {
         const headers = { ...(options.body ? { "Content-Type": "application/json" } : {}), "ngrok-skip-browser-warning": "true", ...(options.headers || {}) };
         if (state.token) headers.Authorization = `Bearer ${state.token}`;
@@ -104,6 +116,9 @@
         return String(username || "?").trim().slice(0, 1).toUpperCase() || "?";
     }
 
+    /**
+     * Оновлює короткий блок профілю в лівій панелі: ім’я, опис і аватарку.
+     */
     function renderProfileSummary() {
         const user = state.currentUser;
         $("profileUsername").textContent = user ? user.username : "Profile";
@@ -120,6 +135,9 @@
         }
     }
 
+    /**
+     * Завантажує аватарку поточного користувача як Blob і показує її через object URL.
+     */
     async function loadProfileAvatar() {
         if (!state.currentUser?.hasAvatar) {
             if (state.avatarObjectUrl) URL.revokeObjectURL(state.avatarObjectUrl);
@@ -153,6 +171,9 @@
         return `${chat.type}:${chat.key}`;
     }
 
+    /**
+     * Створює HTML-вузол аватарки для елемента списку чатів або шапки діалогу.
+     */
     function peerAvatarNode(chat, extraClass = "") {
         const avatar = document.createElement("span");
         avatar.className = `chat-avatar${extraClass ? ` ${extraClass}` : ""}${chat.type === "group" ? " group-avatar" : ""}`;
@@ -168,6 +189,9 @@
         return avatar;
     }
 
+    /**
+     * Ліниво завантажує аватарку співрозмовника або групи й кешує її в пам’яті.
+     */
     function ensurePeerAvatar(chat) {
         if (!chat || (chat.type !== "private" && chat.type !== "group")) return;
         const key = avatarCacheKey(chat);
@@ -212,6 +236,9 @@
         authError.textContent = "";
     }
 
+    /**
+     * Виконує вхід або реєстрацію залежно від поточного режиму форми.
+     */
     async function authenticate(event) {
         event.preventDefault();
         authError.textContent = "";
@@ -229,6 +256,9 @@
         }
     }
 
+    /**
+     * Запускає основний екран після авторизації: профіль, чати, події та періодичне оновлення.
+     */
     async function openApp() {
         state.currentUser = await api("/api/me");
         $("accountLabel").textContent = `${state.currentUser.username} - ${state.currentUser.role}`;
@@ -283,6 +313,9 @@
         $("adminButton").classList.add("hidden");
     }
 
+    /**
+     * Відкриває SSE-підключення до /api/events для отримання оновлень без ручного перезавантаження.
+     */
     async function connectEventStream() {
         if (!state.token) return;
         state.eventController?.abort();
@@ -333,28 +366,59 @@
         }
     }
 
+    /**
+     * Реагує на серверні події: нові повідомлення, редагування, реакції, статуси та зміни груп.
+     */
     function handleServerEvent(event) {
         if (event.command === "EVENT_TYPING") {
             void loadTyping(state.selected);
             return;
         }
-        if (event.command === "EVENT_MESSAGE_UPDATE" && event.fields?.action === "group-avatar") {
-            state.chats.filter((chat) => chat.type === "group" && chat.key === event.fields.group).forEach((chat) => {
-                const key = avatarCacheKey(chat);
-                const avatar = state.peerAvatarUrls.get(key);
-                if (avatar) URL.revokeObjectURL(avatar);
-                state.peerAvatarUrls.delete(key);
-                state.peerAvatarUnavailable.delete(key);
-            });
+
+        const action = event.fields?.action;
+        const group = event.fields?.group;
+        const selectedGroupChanged = state.selected?.type === "group" && state.selected.key === group;
+
+        if (event.command === "EVENT_MESSAGE_UPDATE" && action === "group-avatar") {
+            clearGroupAvatarCache(group);
+            selectedGroupChanged ? void refreshGroupState() : scheduleRefresh();
+            return;
         }
-        if (event.command === "EVENT_MESSAGE_UPDATE"
-                && ["group-members", "group-admins"].includes(event.fields?.action)
-                && membersDialog.open
-                && state.selected?.type === "group"
-                && state.selected.key === event.fields.group) {
-            void loadGroupMembers();
+
+        if (event.command === "EVENT_MESSAGE_UPDATE" && ["group-members", "group-admins"].includes(action)) {
+            selectedGroupChanged ? void refreshGroupState() : scheduleRefresh();
+            return;
         }
+
+        if (event.command === "EVENT_STATUS" && event.fields?.state === "profile-updated") {
+            clearUserAvatarCache(event.fields.username);
+        }
+
         if (event.command) scheduleRefresh();
+    }
+
+    function clearGroupAvatarCache(group) {
+        state.chats.filter((chat) => chat.type === "group" && chat.key === group).forEach((chat) => {
+            const key = avatarCacheKey(chat);
+            const avatar = state.peerAvatarUrls.get(key);
+            if (avatar) URL.revokeObjectURL(avatar);
+            state.peerAvatarUrls.delete(key);
+            state.peerAvatarUnavailable.delete(key);
+        });
+    }
+
+    function clearUserAvatarCache(username) {
+        if (!username) return;
+        state.chats.filter((chat) => chat.type === "private" && chat.key === username).forEach((chat) => {
+            const key = avatarCacheKey(chat);
+            const avatar = state.peerAvatarUrls.get(key);
+            if (avatar) URL.revokeObjectURL(avatar);
+            state.peerAvatarUrls.delete(key);
+            state.peerAvatarUnavailable.delete(key);
+        });
+        if (state.currentUser?.username === username) {
+            void loadProfileAvatar();
+        }
     }
 
     function scheduleRefresh() {
@@ -377,6 +441,9 @@
         }, 1_500);
     }
 
+    /**
+     * Оновлює список чатів і синхронізує дані поточного користувача.
+     */
     async function refreshChats() {
         const result = await api("/api/chats");
         state.currentUser = result.currentUser;
@@ -408,10 +475,22 @@
         }
     }
 
+    async function refreshGroupState() {
+        const wasGroup = state.selected?.type === "group";
+        await refreshChats();
+        if (wasGroup && state.selected?.type === "group" && membersDialog.open) {
+            await loadGroupMembers();
+        }
+        updateConversationHeader();
+    }
+
     function sameChat(first, second) {
         return first && second && first.type === second.type && first.key === second.key;
     }
 
+    /**
+     * Перемальовує ліву панель чатів з урахуванням пошуку та непрочитаних повідомлень.
+     */
     function renderChats() {
         const filter = $("chatSearch").value.trim().toLowerCase();
         chatList.replaceChildren();
@@ -472,10 +551,13 @@
 
     function chatPreview(chat) {
         if (!chat.lastText) return chat.type === "group" ? "Group" : chat.online ? "Online" : "Offline";
-        const prefix = chat.type === "group" && chat.lastSender ? `${chat.lastSender}: ` : "";
+        const prefix = chat.type === "group" && chat.lastSender && !chat.lastSystem ? `${chat.lastSender}: ` : "";
         return `${formatTime(new Date(chat.lastCreatedAt))} ${prefix}${chat.lastText}`.trim();
     }
 
+    /**
+     * Робить чат активним, завантажує його історію та оновлює шапку діалогу.
+     */
     async function selectChat(chat) {
         state.selected = chat;
         clearReply();
@@ -485,6 +567,9 @@
         messageInput.focus();
     }
 
+    /**
+     * Заповнює шапку діалогу: назву, статус, аватарку та доступні кнопки керування.
+     */
     function updateConversationHeader() {
         const chat = state.selected;
         const enabled = Boolean(chat);
@@ -511,6 +596,9 @@
         conversationStatus.textContent = chat.type === "group" ? "Group chat" : chat.online ? "Online" : "Offline";
     }
 
+    /**
+     * Завантажує історію повідомлень для поточного чату.
+     */
     async function loadMessages() {
         const selected = state.selected;
         if (!selected) return;
@@ -522,11 +610,14 @@
         await loadTyping(selected);
     }
 
+    /**
+     * Виводить повідомлення на екран і прокручує список до останнього повідомлення.
+     */
     function renderMessages() {
         const shouldStick = messageList.scrollTop + messageList.clientHeight >= messageList.scrollHeight - 30;
         const filter = messageSearch.value.trim().toLowerCase();
         const messages = state.currentMessages.filter((message) => {
-            return !filter || `${message.sender} ${message.text}`.toLowerCase().includes(filter);
+            return !filter || `${message.sender || ""} ${message.text || ""}`.toLowerCase().includes(filter);
         });
         messageList.replaceChildren();
         if (!messages.length) {
@@ -539,7 +630,13 @@
         if (shouldStick) messageList.scrollTop = messageList.scrollHeight;
     }
 
+    /**
+     * Формує HTML одного повідомлення: текст, автора, час, статус, відповідь і реакції.
+     */
     function messageNode(message) {
+        if (message.system) {
+            return systemMessageNode(message);
+        }
         const own = message.sender === state.currentUser.username;
         const row = document.createElement("article");
         row.className = `message-row${own ? " own" : ""}`;
@@ -575,6 +672,25 @@
     }
 
 
+    /**
+     * Формує службове повідомлення групи: приєднання, вихід або видалення учасника.
+     */
+    function systemMessageNode(message) {
+        const row = document.createElement("article");
+        row.className = "system-message-row";
+        row.id = `message-${message.id}`;
+        const pill = document.createElement("span");
+        pill.className = "system-message-pill";
+        const time = formatTime(new Date(message.createdAt));
+        pill.textContent = time ? `${message.text} · ${time}` : message.text;
+        row.append(pill);
+        return row;
+    }
+
+
+    /**
+     * Прив’язує до повідомлення дії миші: подвійний клік, довге натискання та контекстне меню.
+     */
     function attachMessageInteractionHandlers(bubble, message) {
         let longPressTimer = null;
         let longPressTriggered = false;
@@ -648,6 +764,9 @@
         return REACTION_OPTIONS.includes(reaction) ? reaction : "❤️";
     }
 
+    /**
+     * Відкриває меню реакцій біля позиції курсора.
+     */
     function openReactionMenu(message, clientX, clientY) {
         state.selectedReactionMessage = message;
         messageActionsDialog.close();
@@ -681,6 +800,9 @@
         state.selectedReactionMessage = null;
     }
 
+    /**
+     * Надсилає вибрану реакцію на сервер і локально оновлює повідомлення після відповіді API.
+     */
     async function reactToMessage(message, reaction) {
         closeReactionMenu();
         try {
@@ -725,6 +847,9 @@
         return parts.filter(Boolean).join(" - ");
     }
 
+    /**
+     * Відкриває меню дій над повідомленням: відповідь, редагування або видалення.
+     */
     function openMessageActions(message) {
         state.selectedMessageAction = message;
         const own = message.sender === state.currentUser.username;
@@ -783,6 +908,9 @@
         }
     }
 
+    /**
+     * Відправляє текст повідомлення в поточний чат.
+     */
     async function sendMessage(event) {
         event.preventDefault();
         const text = messageInput.value.trim();
@@ -800,6 +928,9 @@
         }
     }
 
+    /**
+     * Надсилає стан набору тексту не частіше заданого інтервалу, щоб не перевантажувати сервер.
+     */
     async function maybeSendTyping() {
         if (!state.selected || !messageInput.value.trim()) return;
         const now = Date.now();
@@ -851,6 +982,9 @@
         }
     }
 
+    /**
+     * Відкриває вікно керування групою і завантажує список учасників.
+     */
     async function openGroupActions() {
         if (!state.selected || state.selected.type !== "group") return;
         $("membersDialogTitle").textContent = state.selected.title;
@@ -864,6 +998,9 @@
         await loadGroupMembers();
     }
 
+    /**
+     * Отримує учасників групи та права поточного користувача в цій групі.
+     */
     async function loadGroupMembers() {
         if (!state.selected || state.selected.type !== "group") return;
         try {
@@ -888,6 +1025,9 @@
         }
     }
 
+    /**
+     * Виводить список учасників групи з кнопками керування ролями та видаленням.
+     */
     function renderGroupMembers(members, permissions = {}) {
         const list = $("groupMembersList");
         list.replaceChildren();
@@ -935,6 +1075,9 @@
         });
     }
 
+    /**
+     * Показує блок редагування аватарки групи тільки користувачам з правом керування.
+     */
     function renderGroupAvatarEditor() {
         if (!state.selected || state.selected.type !== "group") return;
         const preview = $("groupAvatarPreview");
@@ -963,6 +1106,9 @@
         reader.readAsDataURL(file);
     }
 
+    /**
+     * Зберігає нову аватарку групи або видаляє поточну.
+     */
     async function saveGroupAvatar() {
         if (!state.selected || state.selected.type !== "group") return;
         $("membersError").textContent = "";
@@ -982,27 +1128,32 @@
             if (old) URL.revokeObjectURL(old);
             state.peerAvatarUrls.delete(key);
             state.peerAvatarUnavailable.delete(key);
-            await refreshChats();
+            await refreshGroupState();
             showToast("Group avatar saved");
         } catch (error) {
             $("membersError").textContent = error.message;
         }
     }
 
+    /**
+     * Надсилає запит на видачу або зняття прав адміністратора групи.
+     */
     async function setGroupAdmin(username, admin) {
         if (!state.selected || state.selected.type !== "group") return;
         $("membersError").textContent = "";
         try {
             const group = encodeURIComponent(state.selected.key);
             await api(`/api/groups/${group}/admins`, { method: admin ? "POST" : "DELETE", body: JSON.stringify({ username }) });
-            await loadGroupMembers();
-            await refreshChats();
+            await refreshGroupState();
             showToast(admin ? "Admin rights granted" : "Admin rights removed");
         } catch (error) {
             $("membersError").textContent = error.message;
         }
     }
 
+    /**
+     * Додає користувача до поточної групи за введеним іменем.
+     */
     async function addGroupMember() {
         const username = $("memberNameInput").value.trim();
         if (!username || !state.selected || state.selected.type !== "group") return;
@@ -1011,14 +1162,16 @@
             const group = encodeURIComponent(state.selected.key);
             await api(`/api/groups/${group}/members`, { method: "POST", body: JSON.stringify({ username }) });
             $("memberNameInput").value = "";
-            await loadGroupMembers();
-            await refreshChats();
+            await refreshGroupState();
             showToast("Member added");
         } catch (error) {
             $("membersError").textContent = error.message;
         }
     }
 
+    /**
+     * Видаляє учасника з групи після підтвердження дії.
+     */
     async function removeGroupMember(username) {
         if (!state.selected || state.selected.type !== "group") return;
         if (!window.confirm(`Remove ${username} from ${state.selected.title}?`)) return;
@@ -1027,8 +1180,7 @@
             const group = encodeURIComponent(state.selected.key);
             await api(`/api/groups/${group}/members`, { method: "DELETE", body: JSON.stringify({ username }) });
             $("memberNameInput").value = "";
-            await loadGroupMembers();
-            await refreshChats();
+            await refreshGroupState();
             showToast("Member removed");
         } catch (error) {
             $("membersError").textContent = error.message;
@@ -1062,6 +1214,9 @@
         }
     }
 
+    /**
+     * Відкриває контекстне меню поточного чату.
+     */
     function openChatActions() {
         const chat = state.selected;
         if (!chat) return;
@@ -1084,6 +1239,9 @@
         }
     }
 
+    /**
+     * Завантажує і показує профіль іншого користувача.
+     */
     async function openUserProfile(username) {
         if (!username) return;
         $("viewProfileError").textContent = "";
@@ -1153,6 +1311,9 @@
         friendsDialog.showModal();
     }
 
+    /**
+     * Відкриває діалог редагування власного профілю.
+     */
     async function openProfile() {
         const user = state.currentUser;
         if (!user) return;
@@ -1195,6 +1356,9 @@
         reader.readAsDataURL(file);
     }
 
+    /**
+     * Зберігає опис, аватарку та швидку реакцію профілю.
+     */
     async function saveProfile(event) {
         event.preventDefault();
         $("profileError").textContent = "";
@@ -1223,6 +1387,9 @@
         }
     }
 
+    /**
+     * Показує список користувачів для керування списком друзів.
+     */
     function renderFriendUsers() {
         const list = $("friendUserList");
         const filter = $("friendSearch").value.trim().toLowerCase();
@@ -1302,6 +1469,9 @@
         }
     }
 
+    /**
+     * Відкриває адміністративну панель для користувача з роллю ADMIN.
+     */
     function openAdminPanel() {
         if (!isAdmin()) return;
         $("adminError").textContent = "";
@@ -1310,6 +1480,9 @@
         adminDialog.showModal();
     }
 
+    /**
+     * Виводить користувачів у панелі адміністратора.
+     */
     function renderAdminUsers() {
         const list = $("adminUserList");
         const filter = $("adminUserSearch").value.trim().toLowerCase();
@@ -1384,6 +1557,9 @@
     }
 
 
+    /**
+     * Налаштовує перетягування межі між списком чатів і основною областю розмови.
+     */
     function setupSidebarResize() {
         const layout = $("chatLayout");
         const handle = $("sidebarResizeHandle");
@@ -1434,6 +1610,9 @@
         });
     }
 
+    /**
+     * Застосовує ширину лівої панелі з допустимими мінімальним і максимальним значеннями.
+     */
     function setSidebarWidth(width) {
         const layout = $("chatLayout");
         if (!layout) return;
@@ -1444,6 +1623,9 @@
         localStorage.setItem(SIDEBAR_WIDTH_KEY, String(next));
     }
 
+    /**
+     * Заповнює випадаючий список швидкої реакції в профілі.
+     */
     function populateQuickReactionSelect() {
         const select = $("quickReactionSelect");
         select.replaceChildren();
@@ -1533,6 +1715,7 @@
     $("friendSearch").addEventListener("input", () => { void searchFriendUsers(); });
     $("adminButton").addEventListener("click", openAdminPanel);
     $("adminUserSearch").addEventListener("input", renderAdminUsers);
+    // Нижче підключаються всі DOM-обробники: кнопки, форми, пошук, введення повідомлень і закриття діалогів.
     document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => $(button.dataset.close).close()));
     document.addEventListener("click", (event) => {
         const menu = $("reactionMenu");

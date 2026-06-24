@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="/app.css">
 </head>
 <body>
+<!-- Екран входу та реєстрації користувача. -->
 <main id="authScreen" class="auth-screen">
     <section class="auth-panel" aria-labelledby="authTitle">
         <div class="brand-mark">OC</div>
@@ -28,6 +29,7 @@
     </section>
 </main>
 
+<!-- Основна оболонка чату після авторизації. -->
 <main id="appScreen" class="app-shell hidden">
     <header class="topbar">
         <div class="brand"><span class="brand-mark small">OC</span><span>Online Chat</span></div>
@@ -42,6 +44,7 @@
     </header>
 
     <section id="chatLayout" class="chat-layout">
+        <!-- Ліва панель зі списком чатів, профілем і кнопками керування. -->
         <aside class="sidebar" aria-label="Chats">
             <button id="profileButton" class="profile-card" type="button" aria-label="Open profile">
                 <span id="profileAvatar" class="profile-avatar">?</span>
@@ -62,6 +65,7 @@
         </aside>
         <div id="sidebarResizeHandle" class="sidebar-resize-handle" role="separator" aria-orientation="vertical" aria-label="Resize chat list" tabindex="0"></div>
 
+        <!-- Основна область вибраного діалогу: шапка, повідомлення і поле введення. -->
         <section class="conversation">
             <header id="conversationHeader" class="conversation-header">
                 <button id="conversationIdentity" class="conversation-identity conversation-profile-button" type="button" title="Open profile" aria-label="Open profile">
@@ -108,6 +112,7 @@
     </form>
 </dialog>
 
+<!-- Діалог керування учасниками групового чату. -->
 <dialog id="membersDialog" class="dialog">
     <form method="dialog">
         <div class="dialog-heading">
@@ -189,6 +194,7 @@
     </form>
 </dialog>
 
+<!-- Діалог редагування власного профілю. -->
 <dialog id="profileDialog" class="dialog">
     <form id="profileForm" method="dialog">
         <div class="dialog-heading">
@@ -215,6 +221,7 @@
     </form>
 </dialog>
 
+<!-- Адміністративна панель для керування користувачами та повідомленнями. -->
 <dialog id="adminDialog" class="dialog admin-dialog">
     <form method="dialog">
         <div class="dialog-heading">
@@ -230,6 +237,7 @@
 </dialog>
 
 
+<!-- Діалог перегляду профілю іншого користувача. -->
 <dialog id="userProfileDialog" class="dialog profile-view-dialog">
     <form method="dialog">
         <div class="dialog-heading">

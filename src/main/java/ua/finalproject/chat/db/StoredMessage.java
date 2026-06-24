@@ -3,6 +3,10 @@ package ua.finalproject.chat.db;
 import java.time.Instant;
 import java.util.List;
 
+/**
+ * Повідомлення, прочитане з бази даних.
+ * Об'єкт містить основний текст, службові поля, дані для відповіді та список реакцій.
+ */
 public record StoredMessage(
         long id,
         String chatName,
@@ -11,6 +15,7 @@ public record StoredMessage(
         String body,
         Instant createdAt,
         boolean deleted,
+        boolean system,
         MessageStatus status,
         boolean edited,
         Long replyToMessageId,

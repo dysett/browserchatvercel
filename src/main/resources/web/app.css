@@ -1,3 +1,4 @@
+/* Глобальні змінні теми: кольори, тіні, радіуси та базові відступи. */
 :root {
     color-scheme: light;
     --page: #eaf7ff;
@@ -16,6 +17,7 @@
     --shadow: 0 12px 28px rgba(5, 74, 116, 0.13);
 }
 
+/* Темна тема перевизначає основні кольори інтерфейсу. */
 :root[data-theme="dark"] {
     color-scheme: dark;
     --page: #0d2435;
@@ -53,6 +55,7 @@ button { cursor: pointer; }
 .hidden { display: none !important; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 
+/* Екран авторизації розміщує форму по центру сторінки. */
 .auth-screen {
     min-height: 100vh;
     display: grid;
@@ -116,6 +119,7 @@ input:focus, textarea:focus { border-color: var(--blue); box-shadow: 0 0 0 3px r
 .text-button { margin-top: 14px; padding: 0; background: transparent; color: #087fca; }
 .form-error { min-height: 18px; margin: 0; color: var(--danger); font-size: 13px; }
 
+/* Основна сітка застосунку: ліва панель, розділювач і область чату. */
 .app-shell {
     min-height: 0;
     height: 100vh;
@@ -151,7 +155,9 @@ input:focus, textarea:focus { border-color: var(--blue); box-shadow: 0 0 0 3px r
     min-height: 0;
     overflow: hidden;
 }
+/* Ліва панель містить профіль, пошук і список діалогів. */
 .sidebar { min-height: 0; overflow: hidden; display: flex; flex-direction: column; background: var(--surface-soft); }
+/* Вертикальна межа між списком чатів і розмовою, яку можна перетягувати. */
 .sidebar-resize-handle {
     min-width: 8px;
     cursor: col-resize;
@@ -240,6 +246,7 @@ input:focus, textarea:focus { border-color: var(--blue); box-shadow: 0 0 0 3px r
 .chat-section { padding: 12px 10px 6px; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .7px; }
 .empty-state { padding: 28px 16px; color: var(--muted); text-align: center; }
 
+/* Права область відповідає за активну розмову. */
 .conversation { min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; background: var(--page); }
 .conversation-header { min-height: 84px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 22px; background: var(--surface); border-bottom: 1px solid var(--line); }
 .conversation-identity { display: flex; align-items: center; gap: 11px; min-width: 0; }
@@ -248,9 +255,15 @@ input:focus, textarea:focus { border-color: var(--blue); box-shadow: 0 0 0 3px r
 .conversation-header p { margin: 0; font-size: 13px; }
 .message-search { display: block; padding: 8px 18px; background: var(--surface-soft); border-bottom: 1px solid var(--line); }
 .message-search input { height: 34px; padding: 7px 10px; }
+/* Список повідомлень прокручується незалежно від решти сторінки. */
 .message-list { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 22px clamp(16px, 5vw, 70px); display: flex; flex-direction: column; gap: 10px; }
+/* Рядок повідомлення вирівнює власні й чужі повідомлення по різних сторонах. */
 .message-row { display: flex; }
 .message-row.own { justify-content: flex-end; }
+.system-message-row { display: flex; justify-content: center; padding: 4px 0; }
+.system-message-pill { max-width: min(76%, 620px); padding: 5px 12px; border: 1px solid var(--line); border-radius: 999px; background: rgba(255, 255, 255, 0.72); color: var(--muted); font-size: 12px; text-align: center; box-shadow: 0 1px 4px rgba(7, 76, 119, 0.06); }
+[data-theme="dark"] .system-message-pill { background: rgba(19, 33, 49, 0.78); }
+/* Бульбашка повідомлення містить текст, автора, час і службові позначки. */
 .message-bubble { max-width: min(78%, 680px); padding: 9px 11px; border: 1px solid var(--line); border-left: 3px solid var(--sender-color, var(--line)); border-radius: 7px; background: var(--theirs); box-shadow: 0 2px 7px rgba(7, 76, 119, 0.08); }
 .message-row.own .message-bubble { background: var(--mine); border-color: #8fd7f2; }
 .message-meta { display: flex; justify-content: flex-end; gap: 7px; margin-top: 5px; color: var(--muted); font-size: 11px; }
@@ -283,6 +296,7 @@ input:focus, textarea:focus { border-color: var(--blue); box-shadow: 0 0 0 3px r
 .reply-preview p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
 .composer textarea { min-height: 42px; max-height: 120px; resize: vertical; }
 
+/* Діалогові вікна використовуються для профілю, груп, друзів і панелі адміністратора. */
 .dialog { width: min(92vw, 390px); padding: 0; border: 1px solid var(--line); border-radius: 8px; color: var(--text); background: var(--surface); box-shadow: var(--shadow); }
 .dialog::backdrop { background: rgba(5, 38, 61, 0.48); }
 .dialog form { padding: 20px; }
@@ -303,12 +317,14 @@ input:focus, textarea:focus { border-color: var(--blue); box-shadow: 0 0 0 3px r
 .admin-user-row button.danger { color: var(--danger); }
 .profile-editor-avatar { display: grid; place-items: center; width: 72px; height: 72px; margin: 0 auto; overflow: hidden; border-radius: 50%; }
 .profile-editor-avatar img { display: block; }
+/* Блок керування аватаркою групи доступний власнику або адміністратору групи. */
 .group-avatar-management { display: grid; gap: 10px; margin: 8px 0 12px; padding: 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-soft); }
 .group-avatar-management.hidden { display: none; }
 .group-editor-avatar { margin-bottom: 2px; }
 .group-avatar-actions { justify-content: space-between; }
 .toast { position: fixed; right: 20px; bottom: 20px; max-width: min(360px, calc(100vw - 40px)); padding: 12px 14px; border-radius: 5px; color: #fff; background: #08699f; box-shadow: var(--shadow); }
 
+/* Адаптація для маленьких екранів: інтерфейс стає компактнішим. */
 @media (max-width: 720px) {
     .topbar { padding: 10px 14px; }
     .account-label { display: none; }
@@ -321,6 +337,7 @@ input:focus, textarea:focus { border-color: var(--blue); box-shadow: 0 0 0 3px r
     .composer .primary-button { padding: 8px 11px; }
 }
 
+/* Блок реакцій показує emoji та кількість користувачів, які їх поставили. */
 .message-reactions {
     display: flex;
     flex-wrap: wrap;
@@ -343,6 +360,8 @@ input:focus, textarea:focus { border-color: var(--blue); box-shadow: 0 0 0 3px r
     color: var(--blue-dark);
     background: var(--accent-soft);
 }
+/* Меню реакцій показує набір швидких emoji для повідомлення. */
+/* Меню реакцій відкривається після дії з повідомленням і дає швидко обрати emoji. */
 .reaction-menu {
     position: fixed;
     z-index: 30;

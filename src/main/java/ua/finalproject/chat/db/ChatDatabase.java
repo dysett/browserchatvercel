@@ -16,13 +16,21 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Supplier;
 
+/**
+ * Центральний клас роботи з SQLite-базою чату.
+ * Тут зберігаються користувачі, повідомлення, групи, друзі, аватарки, реакції та службові статуси.
+ * Усі публічні методи синхронізовані, щоб кілька потоків сервера не змінювали базу одночасно.
+ */
 public final class ChatDatabase implements AutoCloseable {
+    // Назва спільного групового чату, до якого новий користувач потрапляє автоматично.
     private static final String GENERAL_CHAT = "general";
+    // Параметри PBKDF2 визначають складність хешування пароля.
     private static final int PBKDF2_ITERATIONS = 120_000;
     private static final int PBKDF2_BITS = 256;
     private static final String DEFAULT_REACTION = "❤️";
@@ -31,6 +39,7 @@ public final class ChatDatabase implements AutoCloseable {
     private final Connection connection;
     private final SecureRandom random = new SecureRandom();
 
+    // Обгортка для аватарки: байти файлу та MIME-тип, який потрібен HTTP-відповіді.
     public record UserAvatar(byte[] content, String contentType) {
     }
 
@@ -46,6 +55,9 @@ public final class ChatDatabase implements AutoCloseable {
         }
     }
 
+    /**
+     * Створює нового користувача, хешує пароль із сіллю та додає користувача до загального чату.
+     */
     public synchronized ChatUser register(String username, String password) {
         String login = requireName(username, "username");
         String salt = createSalt();
@@ -79,6 +91,10 @@ public final class ChatDatabase implements AutoCloseable {
         });
     }
 
+    /**
+     * Перевіряє логін і пароль користувача.
+     * Пароль не порівнюється напряму: спочатку обчислюється хеш, а потім він звіряється з базою.
+     */
     public synchronized ChatUser authenticate(String username, String password) {
         String login = requireName(username, "username");
         String rawPassword = requireName(password, "password");
@@ -119,6 +135,9 @@ public final class ChatDatabase implements AutoCloseable {
         }
     }
 
+    /**
+     * Оновлює опис профілю, аватарку та швидку реакцію користувача.
+     */
     public synchronized ChatUser updateProfile(
             ChatUser user,
             String description,
@@ -169,6 +188,9 @@ public final class ChatDatabase implements AutoCloseable {
         }
     }
 
+    /**
+     * Повертає аватарку користувача, якщо вона збережена в базі.
+     */
     public synchronized Optional<UserAvatar> avatarForUser(int userId) {
         try (PreparedStatement statement = connection.prepareStatement("""
                 select avatar_data, avatar_content_type
@@ -190,6 +212,9 @@ public final class ChatDatabase implements AutoCloseable {
         }
     }
 
+    /**
+     * Повертає аватарку групового чату за його назвою.
+     */
     public synchronized Optional<UserAvatar> avatarForGroup(String groupName) {
         try (PreparedStatement statement = connection.prepareStatement("""
                 select avatar_data, avatar_content_type
@@ -226,6 +251,10 @@ public final class ChatDatabase implements AutoCloseable {
         }
     }
 
+    /**
+     * Оновлює або видаляє аватарку групи.
+     * Право на цю дію перевіряється через canManageGroup.
+     */
     public synchronized void updateGroupAvatar(
             String groupName,
             ChatUser actor,
@@ -288,6 +317,10 @@ public final class ChatDatabase implements AutoCloseable {
         }
     }
 
+    /**
+     * Пошук користувачів за частиною імені.
+     * Поточний користувач виключається з результатів, щоб він не обирав самого себе.
+     */
     public synchronized List<ChatUser> searchUsers(String query, int excludedUserId) {
         if (query == null || query.isBlank()) {
             return List.of();
@@ -364,6 +397,9 @@ public final class ChatDatabase implements AutoCloseable {
         });
     }
 
+    /**
+     * Створює груповий чат і одразу призначає автора власником групи.
+     */
     public synchronized void createGroupForUser(String groupName, int ownerId) {
         String group = requireName(groupName, "groupName");
         inTransaction(() -> {
@@ -450,10 +486,18 @@ public final class ChatDatabase implements AutoCloseable {
         }
     }
 
+    /**
+     * Перевіряє, чи має користувач право керувати групою.
+     * Керувати може власник або адміністратор групи.
+     */
     public synchronized boolean canManageGroup(String groupName, int userId) {
         return isGroupAdmin(groupName, userId);
     }
 
+    /**
+     * Видає або забирає права адміністратора групи.
+     * Власник групи залишається головним користувачем і не може бути знижений через цей метод.
+     */
     public synchronized void setGroupAdmin(String groupName, String username, ChatUser actor, boolean admin) {
         String group = requireName(groupName, "groupName");
         requireGroupOwner(group, actor.id());
@@ -515,6 +559,9 @@ public final class ChatDatabase implements AutoCloseable {
         }
     }
 
+    /**
+     * Додає користувача до групи, якщо поточний користувач має право керування групою.
+     */
     public synchronized void addGroupMember(String groupName, String username, ChatUser actor) {
         String group = requireName(groupName, "groupName");
         requireGroupManager(group, actor.id());
@@ -523,6 +570,10 @@ public final class ChatDatabase implements AutoCloseable {
         joinGroup(user.id(), group);
     }
 
+    /**
+     * Видаляє учасника з групи.
+     * Власника не можна видалити як звичайного учасника.
+     */
     public synchronized void removeGroupMember(String groupName, String username, ChatUser actor) {
         String group = requireName(groupName, "groupName");
         requireGroupManager(group, actor.id());
@@ -633,6 +684,9 @@ public final class ChatDatabase implements AutoCloseable {
         return savePublicMessage(senderId, groupName, body, null);
     }
 
+    /**
+     * Зберігає повідомлення у груповому чаті та прив’язує його до автора.
+     */
     public synchronized StoredMessage savePublicMessage(int senderId, String groupName, String body, Long replyToMessageId) {
         String chat = requireName(groupName, "groupName");
         String messageBody = requireBody(body);
@@ -642,6 +696,10 @@ public final class ChatDatabase implements AutoCloseable {
         });
     }
 
+    /**
+     * Зберігає приватне повідомлення.
+     * Для двох користувачів використовується стабільна назва приватного чату.
+     */
     public synchronized StoredMessage savePrivateMessage(int senderId, String recipientUsername, String body) {
         return savePrivateMessage(senderId, recipientUsername, body, null);
     }
@@ -721,7 +779,7 @@ public final class ChatDatabase implements AutoCloseable {
         int safeLimit = Math.max(1, Math.min(limit, 100));
         String sql = """
                 select m.id, c.name as chat_name, u.username as sender, r.username as recipient,
-                       m.body, m.created_at, m.deleted, m.status, m.edited,
+                       m.body, m.created_at, m.deleted, m.system, m.status, m.edited,
                        m.reply_to_message_id as reply_to_id, reply_sender.username as reply_sender,
                        reply.body as reply_body, reply.deleted as reply_deleted
                 from messages m
@@ -750,12 +808,15 @@ public final class ChatDatabase implements AutoCloseable {
         }
     }
 
+    /**
+     * Повертає історію повідомлень тільки після перевірки, що користувач має доступ до цього чату.
+     */
     public synchronized List<StoredMessage> historyForUser(String chatName, int userId, int limit) {
         String chat = requireName(chatName, "chatName");
         int safeLimit = Math.max(1, Math.min(limit, 100));
         String sql = """
                 select m.id, c.name as chat_name, u.username as sender, r.username as recipient,
-                       m.body, m.created_at, m.deleted, m.status, m.edited,
+                       m.body, m.created_at, m.deleted, m.system, m.status, m.edited,
                        m.reply_to_message_id as reply_to_id, reply_sender.username as reply_sender,
                        reply.body as reply_body, reply.deleted as reply_deleted
                 from messages m
@@ -791,7 +852,7 @@ public final class ChatDatabase implements AutoCloseable {
         int safeLimit = Math.max(1, Math.min(limit, 50));
         String sql = """
                 select m.id, c.name as chat_name, u.username as sender, r.username as recipient,
-                       m.body, m.created_at, m.deleted, m.status, m.edited,
+                       m.body, m.created_at, m.deleted, m.system, m.status, m.edited,
                        m.reply_to_message_id as reply_to_id, reply_sender.username as reply_sender,
                        reply.body as reply_body, reply.deleted as reply_deleted
                 from messages m
@@ -827,6 +888,9 @@ public final class ChatDatabase implements AutoCloseable {
         }
     }
 
+    /**
+     * Позначає повідомлення чату як прочитані для конкретного користувача.
+     */
     public synchronized List<StoredMessage> markChatRead(String chatName, int readerId) {
         String chat = requireName(chatName, "chatName");
         String select = """
@@ -837,6 +901,7 @@ public final class ChatDatabase implements AutoCloseable {
                 where c.name = ?
                   and m.sender_id <> ?
                   and m.deleted = 0
+                  and m.system = 0
                   and m.status <> ?
                   and (c.type <> 'GROUP' or m.id > cm.joined_after_message_id)
                 """;
@@ -880,6 +945,7 @@ public final class ChatDatabase implements AutoCloseable {
                 where c.name = ?
                   and m.sender_id <> ?
                   and m.deleted = 0
+                  and m.system = 0
                   and m.status <> ?
                   and (c.type <> 'GROUP' or m.id > cm.joined_after_message_id)
                 """;
@@ -896,13 +962,14 @@ public final class ChatDatabase implements AutoCloseable {
         }
     }
 
-    public synchronized void deleteMessage(long messageId, ChatUser actor) {
+    public synchronized StoredMessage deleteMessage(long messageId, ChatUser actor) {
         requireAdmin(actor);
         try (PreparedStatement statement = connection.prepareStatement("update messages set deleted = 1, body = '[deleted]' where id = ?")) {
             statement.setLong(1, messageId);
             if (statement.executeUpdate() == 0) {
                 throw new IllegalArgumentException("Message not found: " + messageId);
             }
+            return historyById(messageId);
         } catch (SQLException e) {
             throw new IllegalStateException("Cannot delete message", e);
         }
@@ -915,6 +982,7 @@ public final class ChatDatabase implements AutoCloseable {
                 where id = ?
                   and sender_id = ?
                   and deleted = 0
+                  and system = 0
                 """;
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, requireBody(newBody));
@@ -935,6 +1003,7 @@ public final class ChatDatabase implements AutoCloseable {
                 set deleted = 1, body = '[deleted]'
                 where id = ?
                   and sender_id = ?
+                  and system = 0
                 """;
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setLong(1, messageId);
@@ -949,10 +1018,17 @@ public final class ChatDatabase implements AutoCloseable {
     }
 
 
+    /**
+     * Ставить або прибирає реакцію користувача на повідомлення.
+     * Один користувач може мати тільки одну реакцію на одне повідомлення.
+     */
     public synchronized StoredMessage setMessageReaction(long messageId, ChatUser actor, String reaction) {
         MessageTarget target = requireMessageVisible(messageId, actor.id());
         if (target.deleted()) {
             throw new IllegalArgumentException("Cannot react to deleted message");
+        }
+        if (target.system()) {
+            throw new IllegalArgumentException("Cannot react to system message");
         }
         String normalized = reaction == null ? "" : reaction.trim();
         try {
@@ -1009,10 +1085,14 @@ public final class ChatDatabase implements AutoCloseable {
         connection.close();
     }
 
+    /**
+     * Створює таблиці та службові індекси, якщо база запускається вперше.
+     * Також виконує прості міграції для вже існуючої бази.
+     */
     private void init() throws SQLException {
         try (Statement statement = connection.createStatement()) {
             statement.execute("pragma foreign_keys = on");
-            statement.execute("""
+            ensureTable(statement, "users", """
                     create table if not exists users (
                         id integer primary key autoincrement,
                         username text not null unique,
@@ -1023,7 +1103,7 @@ public final class ChatDatabase implements AutoCloseable {
                         created_at text not null
                     )
                     """);
-            statement.execute("""
+            ensureTable(statement, "chats", """
                     create table if not exists chats (
                         id integer primary key autoincrement,
                         name text not null unique,
@@ -1031,7 +1111,7 @@ public final class ChatDatabase implements AutoCloseable {
                         owner_id integer references users(id)
                     )
                     """);
-            statement.execute("""
+            ensureTable(statement, "chat_members", """
                     create table if not exists chat_members (
                         chat_id integer not null references chats(id),
                         user_id integer not null references users(id),
@@ -1041,7 +1121,7 @@ public final class ChatDatabase implements AutoCloseable {
                         primary key (chat_id, user_id)
                     )
                     """);
-            statement.execute("""
+            ensureTable(statement, "messages", """
                     create table if not exists messages (
                         id integer primary key autoincrement,
                         chat_id integer not null references chats(id),
@@ -1050,19 +1130,20 @@ public final class ChatDatabase implements AutoCloseable {
                         body text not null,
                         created_at text not null,
                         deleted integer not null,
+                        system integer not null default 0,
                         status text not null default 'SENT',
                         edited integer not null default 0,
                         reply_to_message_id integer references messages(id)
                     )
                     """);
-            statement.execute("""
+            ensureTable(statement, "friendships", """
                     create table if not exists friendships (
                         user_id integer not null references users(id),
                         friend_id integer not null references users(id),
                         primary key (user_id, friend_id)
                     )
                     """);
-            statement.execute("""
+            ensureTable(statement, "message_reactions", """
                     create table if not exists message_reactions (
                         message_id integer not null references messages(id) on delete cascade,
                         user_id integer not null references users(id) on delete cascade,
@@ -1071,6 +1152,7 @@ public final class ChatDatabase implements AutoCloseable {
                         primary key (message_id, user_id)
                     )
                     """);
+
             ensureColumn(statement, "users", "password_salt", "text");
             ensureColumn(statement, "users", "description", "text not null default ''");
             ensureColumn(statement, "users", "avatar_data", "blob");
@@ -1080,32 +1162,22 @@ public final class ChatDatabase implements AutoCloseable {
             ensureColumn(statement, "chats", "avatar_data", "blob");
             ensureColumn(statement, "chats", "avatar_content_type", "text");
             ensureColumn(statement, "messages", "status", "text not null default 'SENT'");
+            ensureColumn(statement, "messages", "system", "integer not null default 0");
             ensureColumn(statement, "messages", "edited", "integer not null default 0");
             ensureColumn(statement, "messages", "reply_to_message_id", "integer references messages(id)");
             ensureColumn(statement, "chat_members", "joined_at", "text");
             ensureColumn(statement, "chat_members", "joined_after_message_id", "integer not null default 0");
             ensureColumn(statement, "chat_members", "is_admin", "integer not null default 0");
-            statement.executeUpdate("update chat_members set joined_at = '1970-01-01T00:00:00Z' where joined_at is null");
-            statement.executeUpdate("update chat_members set joined_after_message_id = 0 where joined_after_message_id is null");
-            statement.executeUpdate("""
-                    update chats
-                    set owner_id = (
-                        select min(cm.user_id)
-                        from chat_members cm
-                        where cm.chat_id = chats.id
-                    )
-                    where type = 'GROUP' and name <> 'general' and owner_id is null
-                    """);
-            statement.executeUpdate("""
-                    update chat_members
-                    set is_admin = 1
-                    where exists (
-                        select 1
-                        from chats c
-                        where c.id = chat_members.chat_id
-                          and c.owner_id = chat_members.user_id
-                    )
-                    """);
+
+            ensureIndex(statement, "idx_messages_chat_id", "create index if not exists idx_messages_chat_id on messages(chat_id, id)");
+            ensureIndex(statement, "idx_messages_sender_id", "create index if not exists idx_messages_sender_id on messages(sender_id)");
+            ensureIndex(statement, "idx_messages_recipient_id", "create index if not exists idx_messages_recipient_id on messages(recipient_id)");
+            ensureIndex(statement, "idx_chat_members_user_id", "create index if not exists idx_chat_members_user_id on chat_members(user_id)");
+            ensureIndex(statement, "idx_friendships_friend_id", "create index if not exists idx_friendships_friend_id on friendships(friend_id)");
+            ensureIndex(statement, "idx_reactions_user_id", "create index if not exists idx_reactions_user_id on message_reactions(user_id)");
+
+            normalizeExistingData(statement);
+            ensureDefaultAdmin(statement);
         }
         ensureChat(GENERAL_CHAT, "GROUP");
     }
@@ -1143,6 +1215,47 @@ public final class ChatDatabase implements AutoCloseable {
             connection.rollback();
         } catch (SQLException ignored) {
         }
+    }
+
+    private void ensureTable(Statement statement, String tableName, String createSql) throws SQLException {
+        statement.execute(createSql);
+    }
+
+    private void ensureIndex(Statement statement, String indexName, String createSql) throws SQLException {
+        statement.execute(createSql);
+    }
+
+    private void normalizeExistingData(Statement statement) throws SQLException {
+        statement.executeUpdate("update chat_members set joined_at = '1970-01-01T00:00:00Z' where joined_at is null");
+        statement.executeUpdate("update chat_members set joined_after_message_id = 0 where joined_after_message_id is null");
+        statement.executeUpdate("update messages set status = 'SENT' where status is null or status = ''");
+        statement.executeUpdate("update messages set system = 0 where system is null");
+        statement.executeUpdate("update messages set edited = 0 where edited is null");
+        statement.executeUpdate("update users set description = '' where description is null");
+        statement.executeUpdate("update users set quick_reaction = '❤️' where quick_reaction is null or quick_reaction = ''");
+    }
+
+    private void ensureDefaultAdmin(Statement statement) throws SQLException {
+        statement.executeUpdate("update users set role = 'ADMIN' where lower(username) = 'admin'");
+        statement.executeUpdate("""
+                update chats
+                set owner_id = (
+                    select min(cm.user_id)
+                    from chat_members cm
+                    where cm.chat_id = chats.id
+                )
+                where type = 'GROUP' and name <> 'general' and owner_id is null
+                """);
+        statement.executeUpdate("""
+                update chat_members
+                set is_admin = 1
+                where exists (
+                    select 1
+                    from chats c
+                    where c.id = chat_members.chat_id
+                      and c.owner_id = chat_members.user_id
+                )
+                """);
     }
 
     private void ensureColumn(Statement statement, String table, String column, String definition) throws SQLException {
@@ -1379,12 +1492,70 @@ public final class ChatDatabase implements AutoCloseable {
         throw new IllegalArgumentException("Add this user as a friend before starting a private chat");
     }
 
+    /**
+     * Формує службове повідомлення за типом групової події.
+     * Один метод використовується для створення групи, входу, додавання, видалення та виходу учасників.
+     */
+    public synchronized StoredMessage saveGroupEvent(String groupName, ChatUser actor, String action, String targetUser) {
+        Objects.requireNonNull(actor, "actor");
+        String group = requireName(groupName, "groupName");
+        String verb = requireName(action, "action").toLowerCase(Locale.ROOT);
+        String target = targetUser == null ? "" : targetUser.trim();
+        String actorName = actor.username();
+        String body = switch (verb) {
+            case "created" -> actorName + " created the group";
+            case "joined" -> actorName + " joined the group";
+            case "added" -> actorName + " added " + requireName(target, "targetUser") + " to the group";
+            case "removed" -> actorName + " removed " + requireName(target, "targetUser") + " from the group";
+            case "left" -> actorName + " left the group";
+            case "made-admin" -> actorName + " made " + requireName(target, "targetUser") + " a group admin";
+            case "removed-admin" -> actorName + " removed admin rights from " + requireName(target, "targetUser");
+            case "changed-avatar" -> actorName + " changed the group avatar";
+            case "removed-avatar" -> actorName + " removed the group avatar";
+            default -> throw new IllegalArgumentException("Unknown group event action: " + action);
+        };
+        return saveSystemGroupMessage(group, actor.id(), body);
+    }
+
+    /**
+     * Зберігає службове повідомлення всередині групового чату.
+     * Такі записи показуються по центру історії і описують події групи.
+     */
+    public synchronized StoredMessage saveSystemGroupMessage(String groupName, int actorId, String body) {
+        String group = requireName(groupName, "groupName");
+        long chatId = requireGroupId(group);
+        String messageBody = requireBody(body);
+        String sql = """
+                insert into messages(chat_id, sender_id, recipient_id, body, created_at, deleted, system, status, reply_to_message_id)
+                values (?, ?, null, ?, ?, 0, 1, ?, null)
+                """;
+        try (PreparedStatement statement = connection.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+            statement.setLong(1, chatId);
+            statement.setInt(2, actorId);
+            statement.setString(3, messageBody);
+            statement.setString(4, Instant.now().toString());
+            statement.setString(5, MessageStatus.SENT.name());
+            statement.executeUpdate();
+            try (ResultSet keys = statement.getGeneratedKeys()) {
+                if (keys.next()) {
+                    return historyById(keys.getLong(1));
+                }
+            }
+            throw new IllegalStateException("System message id was not generated");
+        } catch (SQLException e) {
+            throw new IllegalStateException("Cannot save system message", e);
+        }
+    }
+
+    /**
+     * Спільний низькорівневий метод збереження повідомлення для приватних і групових чатів.
+     */
     private StoredMessage saveMessage(String chatName, int senderId, Integer recipientId, String body, Long replyToMessageId) {
         long chatId = ensureChat(chatName, recipientId == null ? "GROUP" : "PRIVATE");
         validateReplyTarget(chatId, replyToMessageId);
         String sql = """
-                insert into messages(chat_id, sender_id, recipient_id, body, created_at, deleted, status, reply_to_message_id)
-                values (?, ?, ?, ?, ?, 0, ?, ?)
+                insert into messages(chat_id, sender_id, recipient_id, body, created_at, deleted, system, status, reply_to_message_id)
+                values (?, ?, ?, ?, ?, 0, 0, ?, ?)
                 """;
         try (PreparedStatement statement = connection.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
             statement.setLong(1, chatId);
@@ -1418,7 +1589,7 @@ public final class ChatDatabase implements AutoCloseable {
     private StoredMessage historyById(long id) {
         String sql = """
                 select m.id, c.name as chat_name, u.username as sender, r.username as recipient,
-                       m.body, m.created_at, m.deleted, m.status, m.edited,
+                       m.body, m.created_at, m.deleted, m.system, m.status, m.edited,
                        m.reply_to_message_id as reply_to_id, reply_sender.username as reply_sender,
                        reply.body as reply_body, reply.deleted as reply_deleted
                 from messages m
@@ -1523,6 +1694,7 @@ public final class ChatDatabase implements AutoCloseable {
                 resultSet.getString("body"),
                 Instant.parse(resultSet.getString("created_at")),
                 resultSet.getInt("deleted") != 0,
+                resultSet.getInt("system") != 0,
                 MessageStatus.valueOf(resultSet.getString("status")),
                 resultSet.getInt("edited") != 0,
                 replyTo,
@@ -1561,7 +1733,7 @@ public final class ChatDatabase implements AutoCloseable {
 
     private MessageTarget requireMessageVisible(long messageId, int userId) {
         String sql = """
-                select m.id, m.deleted, c.id as chat_id, c.type, c.name, m.sender_id, m.recipient_id, cm.joined_after_message_id
+                select m.id, m.deleted, m.system, c.id as chat_id, c.type, c.name, m.sender_id, m.recipient_id, cm.joined_after_message_id
                 from messages m
                 join chats c on c.id = m.chat_id
                 left join chat_members cm on cm.chat_id = c.id and cm.user_id = ?
@@ -1586,14 +1758,14 @@ public final class ChatDatabase implements AutoCloseable {
                 if (!visible) {
                     throw new IllegalArgumentException("Message is not available");
                 }
-                return new MessageTarget(resultSet.getInt("deleted") != 0);
+                return new MessageTarget(resultSet.getInt("deleted") != 0, resultSet.getInt("system") != 0);
             }
         } catch (SQLException e) {
             throw new IllegalStateException("Cannot validate message access", e);
         }
     }
 
-    private record MessageTarget(boolean deleted) {
+    private record MessageTarget(boolean deleted, boolean system) {
     }
 
     private static String privateChatName(int firstUserId, int secondUserId) {
@@ -1639,6 +1811,9 @@ public final class ChatDatabase implements AutoCloseable {
         return value.trim();
     }
 
+    /**
+     * Генерує випадкову сіль для пароля, щоб однакові паролі мали різні хеші.
+     */
     private String createSalt() {
         byte[] bytes = new byte[16];
         random.nextBytes(bytes);

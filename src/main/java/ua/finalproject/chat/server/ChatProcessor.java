@@ -11,12 +11,17 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
+/**
+ * Обробник команд чату.
+ * Він приймає ChatMessage, виконує потрібну дію через базу даних і повертає відповідь або події для інших користувачів.
+ */
 public final class ChatProcessor {
     private static final String GENERAL_CHAT = "general";
     private static final DateTimeFormatter MESSAGE_TIME = DateTimeFormatter.ofPattern("HH:mm")
@@ -30,6 +35,9 @@ public final class ChatProcessor {
         this.registry = Objects.requireNonNull(registry, "registry");
     }
 
+    /**
+     * Визначає команду повідомлення та викликає відповідний приватний метод.
+     */
     public ServerResult process(ChatMessage request, ChatUser currentUser) {
         try {
             return switch (request.command()) {
@@ -95,6 +103,9 @@ public final class ChatProcessor {
         )));
     }
 
+    /**
+     * Відправляє повідомлення у груповий чат і формує події для всіх учасників групи.
+     */
     private ServerResult sendPublic(ChatMessage request, ChatUser currentUser) {
         StoredMessage message = database.savePublicMessage(currentUser.id(), GENERAL_CHAT, request.requiredField("text"));
         List<OutboundEvent> events = eventsForMembers(GENERAL_CHAT, message);
@@ -102,6 +113,9 @@ public final class ChatProcessor {
                 .withEvents(events);
     }
 
+    /**
+     * Відправляє приватне повідомлення конкретному користувачу.
+     */
     private ServerResult sendPrivate(ChatMessage request, ChatUser currentUser) {
         String recipient = request.requiredField("to");
         StoredMessage message = database.savePrivateMessage(
@@ -120,20 +134,23 @@ public final class ChatProcessor {
                 ));
     }
 
+    /**
+     * Створює групу від імені поточного користувача.
+     */
     private ServerResult createGroup(ChatMessage request, ChatUser currentUser) {
         String group = request.requiredField("group");
         database.createGroupForUser(group, currentUser.id());
-        ChatMessage event = groupStatusEvent("group-created", group, "Group created: " + group);
+        StoredMessage systemMessage = database.saveGroupEvent(group, currentUser, "created", null);
         return ServerResult.response(ok(request, "Group created"))
-                .withEvents(List.of(OutboundEvent.toUser(currentUser.username(), event)));
+                .withEvents(eventsForMembers(group, systemMessage));
     }
 
     private ServerResult joinGroup(ChatMessage request, ChatUser currentUser) {
         String group = request.requiredField("group");
         database.joinGroup(currentUser.id(), group);
-        ChatMessage event = groupStatusEvent("group-joined", group, "Joined group: " + group);
+        StoredMessage systemMessage = database.saveGroupEvent(group, currentUser, "joined", null);
         return ServerResult.response(ok(request, "Joined group"))
-                .withEvents(List.of(OutboundEvent.toUser(currentUser.username(), event)));
+                .withEvents(eventsForMembers(group, systemMessage));
     }
 
     private ServerResult sendGroup(ChatMessage request, ChatUser currentUser) {
@@ -182,35 +199,36 @@ public final class ChatProcessor {
         String group = request.requiredField("group");
         String username = request.requiredField("username");
         database.addGroupMember(group, username, currentUser);
-        ChatMessage event = ChatMessage.of(ChatCommand.EVENT_STATUS, 0, ChatMessage.fields(
-                "state", "group-added",
-                "group", group,
-                "message", "Added to group " + group
-        ));
+        StoredMessage systemMessage = database.saveGroupEvent(group, currentUser, "added", username);
         return ServerResult.response(ok(request, "Group member added"))
-                .withEvents(List.of(OutboundEvent.toUser(username, event)));
+                .withEvents(eventsForMembers(group, systemMessage));
     }
 
     private ServerResult removeGroupMember(ChatMessage request, ChatUser currentUser) {
         String group = request.requiredField("group");
         String username = request.requiredField("username");
         database.removeGroupMember(group, username, currentUser);
-        ChatMessage event = ChatMessage.of(ChatCommand.EVENT_STATUS, 0, ChatMessage.fields(
+        StoredMessage systemMessage = database.saveGroupEvent(group, currentUser, "removed", username);
+        ChatMessage removedEvent = ChatMessage.of(ChatCommand.EVENT_STATUS, 0, ChatMessage.fields(
                 "state", "group-removed",
                 "group", group,
                 "message", "Removed from group " + group
         ));
+        List<OutboundEvent> events = new ArrayList<>(eventsForMembers(group, systemMessage));
+        events.add(OutboundEvent.toUser(username, removedEvent));
         return ServerResult.response(ok(request, "Group member removed"))
-                .withEvents(List.of(OutboundEvent.toUser(username, event)));
+                .withEvents(events);
     }
 
     private ServerResult leaveGroup(ChatMessage request, ChatUser currentUser) {
         String group = request.requiredField("group");
-        List<String> members = database.groupMembers(group);
         database.leaveGroup(group, currentUser);
-        ChatMessage event = groupStatusEvent("group-left", group, currentUser.username() + " left group " + group);
+        StoredMessage systemMessage = database.saveGroupEvent(group, currentUser, "left", null);
+        ChatMessage leftEvent = groupStatusEvent("group-left", group, currentUser.username() + " left group " + group);
+        List<OutboundEvent> events = new ArrayList<>(eventsForMembers(group, systemMessage));
+        events.add(OutboundEvent.toUser(currentUser.username(), leftEvent));
         return ServerResult.response(ok(request, "Left group"))
-                .withEvents(statusEvents(members, event));
+                .withEvents(events);
     }
 
     private ServerResult deleteGroup(ChatMessage request, ChatUser currentUser) {
@@ -271,6 +289,9 @@ public final class ChatProcessor {
                 .withEvents(eventsForMessageUpdate(message, "deleted"));
     }
 
+    /**
+     * Формує текстову історію чату для TCP-клієнта.
+     */
     private ServerResult history(ChatMessage request, ChatUser currentUser) {
         String chat = resolveChat(request, currentUser);
         int limit = request.field("limit") == null ? 20 : Integer.parseInt(request.field("limit"));
@@ -304,23 +325,30 @@ public final class ChatProcessor {
     }
 
     private ServerResult deleteMessage(ChatMessage request, ChatUser currentUser) {
-        database.deleteMessage(Long.parseLong(request.requiredField("messageId")), currentUser);
-        return ServerResult.response(ok(request, "Message deleted"));
+        StoredMessage message = database.deleteMessage(Long.parseLong(request.requiredField("messageId")), currentUser);
+        return ServerResult.response(ok(request, "Message deleted"))
+                .withEvents(eventsForMessageUpdate(message, "deleted"));
     }
 
     private ServerResult blockUser(ChatMessage request, ChatUser currentUser) {
-        database.blockUser(request.requiredField("username"), currentUser);
-        return ServerResult.response(ok(request, "User blocked"));
+        String username = request.requiredField("username");
+        database.blockUser(username, currentUser);
+        return ServerResult.response(ok(request, "User blocked"))
+                .withEvents(List.of(userStatusEvent("user-blocked", username)));
     }
 
     private ServerResult unblockUser(ChatMessage request, ChatUser currentUser) {
-        database.unblockUser(request.requiredField("username"), currentUser);
-        return ServerResult.response(ok(request, "User unblocked"));
+        String username = request.requiredField("username");
+        database.unblockUser(username, currentUser);
+        return ServerResult.response(ok(request, "User unblocked"))
+                .withEvents(List.of(userStatusEvent("user-unblocked", username)));
     }
 
     private ServerResult deleteUser(ChatMessage request, ChatUser currentUser) {
-        database.deleteUserPermanently(request.requiredField("username"), currentUser);
-        return ServerResult.response(ok(request, "User permanently deleted"));
+        String username = request.requiredField("username");
+        database.deleteUserPermanently(username, currentUser);
+        return ServerResult.response(ok(request, "User permanently deleted"))
+                .withEvents(List.of(userStatusEvent("user-deleted", username)));
     }
 
     private ServerResult markRead(ChatMessage request, ChatUser currentUser) {
@@ -352,6 +380,15 @@ public final class ChatProcessor {
                 "group", group,
                 "message", message
         ));
+    }
+
+    private OutboundEvent userStatusEvent(String state, String username) {
+        ChatMessage event = ChatMessage.of(ChatCommand.EVENT_STATUS, 0, ChatMessage.fields(
+                "state", state,
+                "username", username,
+                "message", "User updated: " + username
+        ));
+        return OutboundEvent.broadcast(event);
     }
 
     private List<OutboundEvent> eventsForMembers(String chatName, StoredMessage message) {
@@ -395,11 +432,15 @@ public final class ChatProcessor {
                 "status", status.name(),
                 "edited", Boolean.toString(message.edited()),
                 "deleted", Boolean.toString(message.deleted()),
+                "system", Boolean.toString(message.system()),
                 "action", action
         ));
     }
 
     private String historyLine(StoredMessage message) {
+        if (message.system()) {
+            return MESSAGE_TIME.format(message.createdAt()) + " " + message.body();
+        }
         String edited = message.edited() && !message.deleted() ? " (edited)" : "";
         return MESSAGE_TIME.format(message.createdAt()) + " " + message.sender() + ": " + message.body() + edited;
     }
