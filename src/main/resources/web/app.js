@@ -294,9 +294,6 @@
     async function logout(options = {}) {
         const token = state.token;
         const notifyServer = options?.notifyServer !== false;
-        if (notifyServer && token) {
-            await notifyServerLogout(token);
-        }
         state.token = null;
         state.eventController?.abort();
         state.eventController = null;
@@ -304,6 +301,9 @@
         window.clearTimeout(state.refreshTimer);
         state.eventReconnectTimer = null;
         state.refreshTimer = null;
+        if (notifyServer && token) {
+            await notifyServerLogout(token);
+        }
         state.currentUser = null;
         state.users = [];
         state.friends = [];

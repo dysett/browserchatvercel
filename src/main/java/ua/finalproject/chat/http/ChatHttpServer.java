@@ -57,6 +57,7 @@ public final class ChatHttpServer implements AutoCloseable {
     private final List<ApiRoute> apiRoutes;
     private final Map<String, Map<String, Long>> browserTyping = new ConcurrentHashMap<>();
     private final Map<String, Long> browserLastSeen = new ConcurrentHashMap<>();
+    private final Set<String> browserLoggedOut = ConcurrentHashMap.newKeySet();
     private final ObjectMapper mapper = new ObjectMapper()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
@@ -126,7 +127,7 @@ public final class ChatHttpServer implements AutoCloseable {
                 new ApiRoute("GET", "/api/events", (exchange, user) -> eventHub.open(
                         exchange,
                         user.username(),
-                        () -> markBrowserOnline(user.username()),
+                        () -> markBrowserOnlineFromEventStream(user.username()),
                         () -> markBrowserOfflineIfNoConnections(user.username())
                 )),
                 new ApiRoute("GET", "/api/typing", this::typingUsers),
@@ -216,6 +217,10 @@ public final class ChatHttpServer implements AutoCloseable {
         sendJson(exchange, 200, new ActionResponse("Logged out"));
     }
 
+    private boolean isLogoutRequest(String path, String method) {
+        return "/api/logout".equals(path) && "POST".equals(method);
+    }
+
 
     /**
      * Основний маршрутизатор захищених API-запитів.
@@ -227,9 +232,11 @@ public final class ChatHttpServer implements AutoCloseable {
         }
         try {
             ChatUser user = currentUser(exchange);
-            markBrowserOnline(user.username());
             String path = exchange.getRequestURI().getPath();
             String method = exchange.getRequestMethod();
+            if (!isLogoutRequest(path, method)) {
+                markBrowserOnline(user.username());
+            }
             if (routeProtectedApi(exchange, user, path, method)) {
                 return;
             }
@@ -288,7 +295,7 @@ public final class ChatHttpServer implements AutoCloseable {
                 eventHub.open(
                         exchange,
                         user.username(),
-                        () -> markBrowserOnline(user.username()),
+                        () -> markBrowserOnlineFromEventStream(user.username()),
                         () -> markBrowserOfflineIfNoConnections(user.username())
                 );
                 return;
@@ -814,6 +821,9 @@ public final class ChatHttpServer implements AutoCloseable {
     }
 
     private void markBrowserOnline(String username) {
+        if (browserLoggedOut.contains(username)) {
+            return;
+        }
         boolean wasOnline = registryOnline(username);
         browserLastSeen.put(username, System.currentTimeMillis() + BROWSER_PRESENCE_TTL_MILLIS);
         if (!wasOnline && registryOnline(username)) {
@@ -821,7 +831,13 @@ public final class ChatHttpServer implements AutoCloseable {
         }
     }
 
+    private void markBrowserOnlineFromEventStream(String username) {
+        browserLoggedOut.remove(username);
+        markBrowserOnline(username);
+    }
+
     private void forceBrowserOffline(String username) {
+        browserLoggedOut.add(username);
         browserLastSeen.remove(username);
         eventHub.closeUser(username);
         publishPresence(username);
