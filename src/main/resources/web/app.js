@@ -270,24 +270,34 @@
         connectEventStream();
     }
 
-    function notifyServerLogout(token) {
-        return fetch(apiUrl("/api/logout"), {
-            method: "POST",
-            headers: {
-                Authorization: `Bearer ${token}`,
-                "ngrok-skip-browser-warning": "true"
-            },
-            keepalive: true
-        }).catch(() => null);
+    async function notifyServerLogout(token) {
+        if (!token) return;
+        const controller = new AbortController();
+        const timeout = window.setTimeout(() => controller.abort(), 2000);
+        try {
+            await fetch(apiUrl("/api/logout"), {
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    "ngrok-skip-browser-warning": "true"
+                },
+                keepalive: true,
+                signal: controller.signal
+            });
+        } catch (error) {
+            // Якщо запит не встиг пройти, SSE-з'єднання все одно закриється і сервер зніме online-статус за резервною логікою.
+        } finally {
+            window.clearTimeout(timeout);
+        }
     }
 
-    function logout(options = {}) {
+    async function logout(options = {}) {
         const token = state.token;
         const notifyServer = options?.notifyServer !== false;
-        state.token = null;
         if (notifyServer && token) {
-            void notifyServerLogout(token);
+            await notifyServerLogout(token);
         }
+        state.token = null;
         state.eventController?.abort();
         state.eventController = null;
         window.clearTimeout(state.eventReconnectTimer);
@@ -1671,6 +1681,11 @@
     authForm.addEventListener("submit", authenticate);
     authModeButton.addEventListener("click", () => setAuthMode(!registrationMode));
     $("logoutButton").addEventListener("click", () => { logout(); });
+    window.addEventListener("pagehide", () => {
+        if (state.token) {
+            void notifyServerLogout(state.token);
+        }
+    });
     $("themeButton").addEventListener("click", () => setTheme(state.theme === "light" ? "dark" : "light"));
     $("friendsButton").addEventListener("click", openFriendsPanel);
     $("profileButton").addEventListener("click", () => { void openProfile(); });
