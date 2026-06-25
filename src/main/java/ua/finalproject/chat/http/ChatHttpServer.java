@@ -119,10 +119,16 @@ public final class ChatHttpServer implements AutoCloseable {
         return List.of(
                 new ApiRoute("GET", "/api/me", (exchange, user) -> sendJson(exchange, 200, userDto(user))),
                 new ApiRoute("PUT", "/api/me", this::updateProfile),
+                new ApiRoute("POST", "/api/logout", this::logout),
                 new ApiRoute("GET", "/api/me/avatar", this::sendProfileAvatar),
                 new ApiRoute("GET", "/api/chats", this::chats),
                 new ApiRoute("GET", "/api/users/search", this::userSearch),
-                new ApiRoute("GET", "/api/events", (exchange, user) -> eventHub.open(exchange, user.username(), () -> markBrowserOnline(user.username()))),
+                new ApiRoute("GET", "/api/events", (exchange, user) -> eventHub.open(
+                        exchange,
+                        user.username(),
+                        () -> markBrowserOnline(user.username()),
+                        () -> markBrowserOfflineIfNoConnections(user.username())
+                )),
                 new ApiRoute("GET", "/api/typing", this::typingUsers),
                 new ApiRoute("POST", "/api/typing", this::typing),
                 new ApiRoute("GET", "/api/messages", this::history),
@@ -199,6 +205,19 @@ public final class ChatHttpServer implements AutoCloseable {
     }
 
     /**
+     * Обробляє вихід користувача з вебінтерфейсу та одразу оновлює його online/offline статус для інших клієнтів.
+     */
+    private void logout(HttpExchange exchange, ChatUser user) throws IOException {
+        if (!"POST".equals(exchange.getRequestMethod())) {
+            methodNotAllowed(exchange, "POST");
+            return;
+        }
+        forceBrowserOffline(user.username());
+        sendJson(exchange, 200, new ActionResponse("Logged out"));
+    }
+
+
+    /**
      * Основний маршрутизатор захищених API-запитів.
      * До цього блоку запит доходить тільки після перевірки Bearer-токена.
      */
@@ -266,7 +285,12 @@ public final class ChatHttpServer implements AutoCloseable {
                     methodNotAllowed(exchange, "GET");
                     return;
                 }
-                eventHub.open(exchange, user.username(), () -> markBrowserOnline(user.username()));
+                eventHub.open(
+                        exchange,
+                        user.username(),
+                        () -> markBrowserOnline(user.username()),
+                        () -> markBrowserOfflineIfNoConnections(user.username())
+                );
                 return;
             }
             if ("/api/typing".equals(path)) {
@@ -786,11 +810,38 @@ public final class ChatHttpServer implements AutoCloseable {
     }
 
     private boolean registryOnline(String username) {
-        return chatServer.onlineUsers().contains(username) || browserOnline(username);
+        return chatServer.onlineUsers().contains(username) || eventHub.hasConnections(username) || browserOnline(username);
     }
 
     private void markBrowserOnline(String username) {
+        boolean wasOnline = registryOnline(username);
         browserLastSeen.put(username, System.currentTimeMillis() + BROWSER_PRESENCE_TTL_MILLIS);
+        if (!wasOnline && registryOnline(username)) {
+            publishPresence(username);
+        }
+    }
+
+    private void forceBrowserOffline(String username) {
+        browserLastSeen.remove(username);
+        eventHub.closeUser(username);
+        publishPresence(username);
+    }
+
+    private void markBrowserOfflineIfNoConnections(String username) {
+        if (eventHub.hasConnections(username)) {
+            return;
+        }
+        browserLastSeen.remove(username);
+        publishPresence(username);
+    }
+
+    private void publishPresence(String username) {
+        ChatMessage event = ChatMessage.of(ChatCommand.EVENT_STATUS, 0, ChatMessage.fields(
+                "state", "presence",
+                "username", username,
+                "online", Boolean.toString(registryOnline(username))
+        ));
+        eventHub.publish(List.of(OutboundEvent.broadcast(event)));
     }
 
     private boolean browserOnline(String username) {

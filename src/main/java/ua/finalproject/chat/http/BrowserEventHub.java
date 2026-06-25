@@ -13,6 +13,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * Центр Server-Sent Events для браузерного клієнта.
+ * Через нього сервер відправляє в браузер події про нові повідомлення, редагування, реакції та оновлення груп.
+ */
 final class BrowserEventHub implements AutoCloseable {
     private static final long KEEP_ALIVE_MILLIS = 5_000;
 
@@ -23,7 +27,7 @@ final class BrowserEventHub implements AutoCloseable {
         this.mapper = mapper;
     }
 
-    void open(HttpExchange exchange, String username, Runnable keepAlive) throws IOException {
+    void open(HttpExchange exchange, String username, Runnable keepAlive, Runnable onDisconnect) throws IOException {
         exchange.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
         exchange.getResponseHeaders().set("Cache-Control", "no-cache");
         exchange.getResponseHeaders().set("Connection", "keep-alive");
@@ -51,6 +55,19 @@ final class BrowserEventHub implements AutoCloseable {
                 }
             }
             connection.close();
+            onDisconnect.run();
+        }
+    }
+
+    boolean hasConnections(String username) {
+        Set<BrowserConnection> userConnections = connections.get(username);
+        return userConnections != null && !userConnections.isEmpty();
+    }
+
+    void closeUser(String username) {
+        Set<BrowserConnection> userConnections = connections.remove(username);
+        if (userConnections != null) {
+            userConnections.forEach(BrowserConnection::close);
         }
     }
 

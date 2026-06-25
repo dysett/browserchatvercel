@@ -90,7 +90,7 @@
         const response = await fetch(apiUrl(path), { ...options, headers });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) {
-            if (response.status === 401 && state.token) logout();
+            if (response.status === 401 && state.token) logout({ notifyServer: false });
             throw new Error(payload.error || "Request failed");
         }
         return payload;
@@ -270,14 +270,30 @@
         connectEventStream();
     }
 
-    function logout() {
+    function notifyServerLogout(token) {
+        return fetch(apiUrl("/api/logout"), {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${token}`,
+                "ngrok-skip-browser-warning": "true"
+            },
+            keepalive: true
+        }).catch(() => null);
+    }
+
+    function logout(options = {}) {
+        const token = state.token;
+        const notifyServer = options?.notifyServer !== false;
+        state.token = null;
+        if (notifyServer && token) {
+            void notifyServerLogout(token);
+        }
         state.eventController?.abort();
         state.eventController = null;
         window.clearTimeout(state.eventReconnectTimer);
         window.clearTimeout(state.refreshTimer);
         state.eventReconnectTimer = null;
         state.refreshTimer = null;
-        state.token = null;
         state.currentUser = null;
         state.users = [];
         state.friends = [];
@@ -392,6 +408,11 @@
 
         if (event.command === "EVENT_STATUS" && event.fields?.state === "profile-updated") {
             clearUserAvatarCache(event.fields.username);
+        }
+
+        if (event.command === "EVENT_STATUS" && event.fields?.state === "presence") {
+            scheduleRefresh();
+            return;
         }
 
         if (event.command) scheduleRefresh();
@@ -1649,7 +1670,7 @@
 
     authForm.addEventListener("submit", authenticate);
     authModeButton.addEventListener("click", () => setAuthMode(!registrationMode));
-    $("logoutButton").addEventListener("click", logout);
+    $("logoutButton").addEventListener("click", () => { logout(); });
     $("themeButton").addEventListener("click", () => setTheme(state.theme === "light" ? "dark" : "light"));
     $("friendsButton").addEventListener("click", openFriendsPanel);
     $("profileButton").addEventListener("click", () => { void openProfile(); });
