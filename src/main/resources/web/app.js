@@ -396,6 +396,11 @@
      * Реагує на серверні події: нові повідомлення, редагування, реакції, статуси та зміни груп.
      */
     function handleServerEvent(event) {
+        if (event.status === "connected") {
+            scheduleRefresh();
+            return;
+        }
+
         if (event.command === "EVENT_TYPING") {
             void loadTyping(state.selected);
             return;

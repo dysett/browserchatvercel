@@ -202,6 +202,8 @@ public final class ChatHttpServer implements AutoCloseable {
     }
 
     private AuthResponse authResponse(ChatUser user) {
+        browserLoggedOut.remove(user.username());
+        markBrowserOnline(user.username());
         return new AuthResponse(tokenService.create(user.username()), "Bearer", user.username(), user.role().name());
     }
 
@@ -832,8 +834,12 @@ public final class ChatHttpServer implements AutoCloseable {
     }
 
     private void markBrowserOnlineFromEventStream(String username) {
+        boolean wasOnline = chatServer.onlineUsers().contains(username) || browserOnline(username);
         browserLoggedOut.remove(username);
-        markBrowserOnline(username);
+        browserLastSeen.put(username, System.currentTimeMillis() + BROWSER_PRESENCE_TTL_MILLIS);
+        if (!wasOnline) {
+            publishPresence(username);
+        }
     }
 
     private void forceBrowserOffline(String username) {
